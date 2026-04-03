@@ -2,9 +2,8 @@
 
 const http = require('http');
 const path = require('path');
-const net = require('net');
 const { URL } = require('url');
-const { execFile, spawn } = require('child_process');
+const { execFile } = require('child_process');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = '0.0.0.0';
@@ -18,8 +17,10 @@ const CONTAINER_INTERNAL_PORT = Number(process.env.CONTAINER_INTERNAL_PORT || 30
 const HEALTHCHECK_PATH = process.env.HEALTHCHECK_PATH || '/health';
 const HEALTHCHECK_ATTEMPTS = Number(process.env.HEALTHCHECK_ATTEMPTS || 15);
 const HEALTHCHECK_INTERVAL_MS = Number(process.env.HEALTHCHECK_INTERVAL_MS || 2000);
-const HEALTHCHECK_TIMEOUT_MS = Number(process.env.HEALTHCHECK_TIMEOUT_MS || 1500);
 const DOCKER_LOG_TAIL = Number(process.env.DOCKER_LOG_TAIL || 250);
+const WORKER_URL = String(process.env.WORKER_URL || '').trim().replace(/\/$/, '');
+const WORKER_TOKEN = String(process.env.WORKER_TOKEN || '').trim();
+const WORKER_TIMEOUT_MS = Number(process.env.WORKER_TIMEOUT_MS || 45_000);
 
 const deployments = [];
 const servicePortMap = new Map();
@@ -144,129 +145,116 @@ function runTask(task) {
   });
 }
 
-function runCommand(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, { cwd: options.cwd || REPO_PATH, maxBuffer: 20 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        const err = new Error((stderr || stdout || error.message || 'command_failed').trim());
-        err.stdout = String(stdout || '');
-        err.stderr = String(stderr || '');
-        err.command = [command, ...args].join(' ');
-        reject(err);
-        return;
-      }
-      resolve({ stdout: String(stdout || ''), stderr: String(stderr || ''), command: [command, ...args].join(' ') });
-    });
+function readJsonBody(req, res, onBody) {
+  let size = 0;
+  const chunks = [];
+
+  req.on('data', (chunk) => {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      sendJson(res, 413, { error: 'body_too_large' });
+      req.destroy();
+      return;
+    }
+    chunks.push(chunk);
   });
+
+  req.on('end', () => {
+    try {
+      onBody(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+    } catch {
+      sendJson(res, 400, { error: 'invalid_json' });
+    }
+  });
+}
+
+function chooseAssignedPort(serviceName) {
+  const existing = servicePortMap.get(serviceName);
+  if (existing) return existing;
+
+  for (let port = DEPLOY_PORT_START; port <= DEPLOY_PORT_END; port += 1) {
+    if ([...servicePortMap.values()].includes(port)) continue;
+    servicePortMap.set(serviceName, port);
+    return port;
+  }
+
+  throw new Error(`No available deployment ports in range ${DEPLOY_PORT_START}-${DEPLOY_PORT_END}`);
 }
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function checkPortAvailable(port) {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.unref();
-    server.on('error', () => resolve(false));
-    server.listen({ port, host: '0.0.0.0' }, () => {
-      server.close(() => resolve(true));
-    });
-  });
+function buildWorkerHeaders(extra = {}) {
+  return {
+    Authorization: `Bearer ${WORKER_TOKEN}`,
+    'Content-Type': 'application/json; charset=utf-8',
+    ...extra,
+  };
 }
 
-async function assignServicePort(serviceName) {
-  const existing = servicePortMap.get(serviceName);
-  if (existing && await checkPortAvailable(existing)) {
-    return existing;
+function ensureWorkerConfigured() {
+  if (!WORKER_URL || !WORKER_TOKEN) {
+    throw new Error('WORKER_URL and WORKER_TOKEN must both be configured for deployment operations.');
   }
-
-  for (let port = DEPLOY_PORT_START; port <= DEPLOY_PORT_END; port += 1) {
-    if (!await checkPortAvailable(port)) continue;
-    servicePortMap.set(serviceName, port);
-    return port;
-  }
-  throw new Error(`No available deployment ports in range ${DEPLOY_PORT_START}-${DEPLOY_PORT_END}`);
 }
 
-function httpPing(port, route) {
-  return new Promise((resolve) => {
+function workerRequest(method, pathname, payload, options = {}) {
+  return new Promise((resolve, reject) => {
+    ensureWorkerConfigured();
+    const endpoint = new URL(pathname, `${WORKER_URL}/`);
+    const body = payload == null ? null : Buffer.from(JSON.stringify(payload));
+
     const request = http.request({
-      hostname: '127.0.0.1',
-      port,
-      path: route,
-      method: 'GET',
-      timeout: HEALTHCHECK_TIMEOUT_MS,
+      protocol: endpoint.protocol,
+      hostname: endpoint.hostname,
+      port: endpoint.port,
+      path: `${endpoint.pathname}${endpoint.search}`,
+      method,
+      timeout: options.timeoutMs || WORKER_TIMEOUT_MS,
+      headers: buildWorkerHeaders(
+        body
+          ? { 'Content-Length': String(body.length) }
+          : { 'Content-Length': '0' },
+      ),
     }, (response) => {
-      response.resume();
-      resolve(response.statusCode >= 200 && response.statusCode < 400);
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let parsed = null;
+        if (text.trim()) {
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            parsed = { message: text };
+          }
+        }
+
+        if ((response.statusCode || 500) >= 400) {
+          const message = parsed?.error || parsed?.message || `Worker request failed (${response.statusCode})`;
+          const err = new Error(message);
+          err.statusCode = response.statusCode;
+          err.payload = parsed;
+          reject(err);
+          return;
+        }
+
+        resolve({ statusCode: response.statusCode || 200, payload: parsed || {} });
+      });
     });
 
-    request.on('error', () => resolve(false));
+    request.on('error', reject);
     request.on('timeout', () => {
-      request.destroy();
-      resolve(false);
+      request.destroy(new Error(`Worker request timeout: ${method} ${pathname}`));
     });
+
+    if (body) request.write(body);
     request.end();
   });
 }
 
-async function captureDockerLogs(deployment, tail = DOCKER_LOG_TAIL) {
-  if (!deployment.containerId) return;
-  try {
-    const out = await runCommand('docker', ['logs', '--tail', String(tail), deployment.containerId]);
-    const text = out.stdout || out.stderr || '';
-    if (!text.trim()) {
-      writeDeploymentLog(deployment, 'docker logs: (no output)');
-      return;
-    }
-    const lines = text.trimEnd().split('\n');
-    for (const line of lines) {
-      writeDeploymentLog(deployment, `[docker] ${line}`);
-    }
-  } catch (err) {
-    writeDeploymentLog(deployment, `Unable to fetch docker logs: ${err.message}`);
-  }
-}
-
-function monitorContainerLifecycle(deployment) {
-  if (!deployment.containerId) return;
-
-  runCommand('docker', ['wait', deployment.containerId])
-    .then(async (result) => {
-      const exitCode = Number(String(result.stdout || '').trim() || '1');
-      deployment.lastExitCode = exitCode;
-      if (deployment.status === 'success' || deployment.status === 'running' || deployment.status === 'health_check') {
-        setDeploymentStatus(deployment, 'failed');
-        deployment.errorSummary = `Container exited after deployment with code ${exitCode}.`;
-        writeDeploymentLog(deployment, deployment.errorSummary);
-        await captureDockerLogs(deployment);
-      }
-    })
-    .catch((err) => {
-      writeDeploymentLog(deployment, `Container monitor error: ${err.message}`);
-    });
-}
-
-async function pullRepoForDeployment(deployment) {
-  const commands = [
-    ['git', ['-C', REPO_PATH, 'fetch', '--all', '--prune']],
-    ['git', ['-C', REPO_PATH, 'checkout', deployment.branch]],
-    ['git', ['-C', REPO_PATH, 'pull', '--ff-only', 'origin', deployment.branch]],
-    ['git', ['-C', REPO_PATH, 'rev-parse', '--verify', deployment.commitSha]],
-  ];
-
-  for (const [cmd, args] of commands) {
-    deployment.commands.push([cmd, ...args].join(' '));
-    const out = await runCommand(cmd, args, { cwd: REPO_PATH });
-    const output = `${out.stdout}${out.stderr}`.trim();
-    if (output) {
-      writeDeploymentLog(deployment, output.split('\n')[0]);
-    }
-  }
-}
-
-async function startDockerDeployment(deployment) {
+async function startWorkerDeployment(deployment) {
   const safeProject = sanitizeName(deployment.project);
   const safeService = sanitizeName(deployment.service);
   const imageTag = `${safeProject}-${safeService}-${deployment.commitSha.slice(0, 12)}`;
@@ -275,70 +263,75 @@ async function startDockerDeployment(deployment) {
   deployment.imageTag = imageTag;
   deployment.containerName = containerName;
 
+  const assignedPort = chooseAssignedPort(containerName);
+  deployment.assignedPort = assignedPort;
+
+  deployment.worker = {
+    baseUrl: WORKER_URL,
+    containerName,
+    imageTag,
+    containerId: null,
+    assignedPort,
+    lastHealth: null,
+    updatedAt: nowIso(),
+  };
+
   setDeploymentStatus(deployment, 'building');
   writeDeploymentLog(deployment, `Preparing deployment for ${deployment.project}/${deployment.service}.`);
 
-  await pullRepoForDeployment(deployment);
-
-  const assignedPort = await assignServicePort(containerName);
-  deployment.assignedPort = assignedPort;
-
-  const buildArgs = ['build', '-f', 'Dockerfile', '-t', imageTag, REPO_PATH];
-  deployment.commands.push(`docker ${buildArgs.join(' ')}`);
-  await runCommand('docker', buildArgs, { cwd: REPO_PATH });
-  writeDeploymentLog(deployment, `Built Docker image ${imageTag}.`);
-
-  const existingArgs = ['ps', '-aq', '--filter', `name=^/${containerName}$`];
-  deployment.commands.push(`docker ${existingArgs.join(' ')}`);
-  const existing = (await runCommand('docker', existingArgs)).stdout.trim();
-  if (existing) {
-    const removeArgs = ['rm', '-f', containerName];
-    deployment.commands.push(`docker ${removeArgs.join(' ')}`);
-    await runCommand('docker', removeArgs);
-    writeDeploymentLog(deployment, `Stopped existing container ${containerName}.`);
-  }
-
-  const runArgs = [
-    'run', '-d',
-    '--name', containerName,
-    '-p', `${assignedPort}:${CONTAINER_INTERNAL_PORT}`,
-    '--label', `deployment_id=${deployment.id}`,
+  const buildBody = {
+    repoPath: REPO_PATH,
+    branch: deployment.branch,
+    commitSha: deployment.commitSha,
     imageTag,
-  ];
-  deployment.commands.push(`docker ${runArgs.join(' ')}`);
-  const runResult = await runCommand('docker', runArgs);
-  deployment.containerId = runResult.stdout.trim();
+    dockerfile: 'Dockerfile',
+  };
+  deployment.commands.push('POST /build');
+  await workerRequest('POST', '/build', buildBody, { timeoutMs: 10 * 60_000 });
+  writeDeploymentLog(deployment, `Built Docker image ${imageTag} via worker.`);
+
+  deployment.commands.push('POST /stop');
+  await workerRequest('POST', '/stop', { containerName, remove: true });
+
+  deployment.commands.push('POST /run');
+  const runResult = await workerRequest('POST', '/run', {
+    imageTag,
+    containerName,
+    assignedPort,
+    containerInternalPort: CONTAINER_INTERNAL_PORT,
+    labels: { deployment_id: deployment.id },
+  });
+  deployment.containerId = runResult.payload.containerId || null;
+  deployment.worker.containerId = deployment.containerId;
+  deployment.worker.updatedAt = nowIso();
 
   setDeploymentStatus(deployment, 'health_check');
   writeDeploymentLog(deployment, `Container started (${deployment.containerId}) on port ${assignedPort}.`);
 
   deployment.testCommands = [
-    `curl -fsS http://127.0.0.1:${assignedPort}${HEALTHCHECK_PATH}`,
-    `docker ps --filter name=^/${containerName}$`,
-    `docker logs --tail 100 ${deployment.containerId}`,
+    `curl -fsS -X POST ${WORKER_URL}/health -H 'Authorization: Bearer ***' -H 'Content-Type: application/json' -d '{"assignedPort":${assignedPort},"path":"${HEALTHCHECK_PATH}"}'`,
+    `curl -fsS -X POST ${WORKER_URL}/logs -H 'Authorization: Bearer ***' -H 'Content-Type: application/json' -d '{"containerId":"${deployment.containerId}","tail":100}'`,
   ];
 
   let healthy = false;
   for (let attempt = 1; attempt <= HEALTHCHECK_ATTEMPTS; attempt += 1) {
-    const isHealthy = await httpPing(assignedPort, HEALTHCHECK_PATH);
+    const healthResult = await workerRequest('POST', '/health', {
+      assignedPort,
+      path: HEALTHCHECK_PATH,
+      timeoutMs: 1500,
+    });
+    const isHealthy = !!healthResult.payload.ok;
+    deployment.worker.lastHealth = {
+      attempt,
+      ok: isHealthy,
+      checkedAt: nowIso(),
+      response: healthResult.payload,
+    };
+    deployment.worker.updatedAt = nowIso();
+
     writeDeploymentLog(deployment, `Health check attempt ${attempt}/${HEALTHCHECK_ATTEMPTS}: ${isHealthy ? 'ok' : 'not ready'}.`);
     if (isHealthy) {
       healthy = true;
-      break;
-    }
-
-    try {
-      const inspectArgs = ['inspect', '-f', '{{.State.Running}}', deployment.containerId];
-      deployment.commands.push(`docker ${inspectArgs.join(' ')}`);
-      const inspect = await runCommand('docker', inspectArgs);
-      if (inspect.stdout.trim() !== 'true') {
-        deployment.errorSummary = 'Container exited before becoming healthy.';
-        writeDeploymentLog(deployment, deployment.errorSummary);
-        break;
-      }
-    } catch (err) {
-      deployment.errorSummary = `Unable to inspect container state: ${err.message}`;
-      writeDeploymentLog(deployment, deployment.errorSummary);
       break;
     }
 
@@ -347,60 +340,88 @@ async function startDockerDeployment(deployment) {
 
   if (!healthy) {
     setDeploymentStatus(deployment, 'failed');
-    deployment.errorSummary = deployment.errorSummary || `Health check failed for http://127.0.0.1:${assignedPort}${HEALTHCHECK_PATH}`;
-    await captureDockerLogs(deployment);
+    deployment.errorSummary = `Health check failed for worker port ${assignedPort}${HEALTHCHECK_PATH}`;
+    try {
+      const logsResult = await workerRequest('POST', '/logs', {
+        containerId: deployment.containerId,
+        tail: DOCKER_LOG_TAIL,
+      });
+      const logLines = String(logsResult.payload.logs || '').split('\n').filter(Boolean);
+      for (const line of logLines) {
+        writeDeploymentLog(deployment, `[docker] ${line}`);
+      }
+    } catch (err) {
+      writeDeploymentLog(deployment, `Unable to fetch worker logs: ${err.message}`);
+    }
     throw new Error(deployment.errorSummary);
   }
 
   setDeploymentStatus(deployment, 'success');
   deployment.url = `http://127.0.0.1:${assignedPort}`;
   writeDeploymentLog(deployment, `Deployment successful at ${deployment.url}.`);
-
-  monitorContainerLifecycle(deployment);
 }
 
 function startDeploymentFlow(deployment) {
   writeDeploymentLog(deployment, `Deployment queued for ${deployment.project}/${deployment.service}.`);
 
-  startDockerDeployment(deployment)
-    .catch(async (err) => {
+  startWorkerDeployment(deployment)
+    .catch((err) => {
       setDeploymentStatus(deployment, 'failed');
       deployment.errorSummary = deployment.errorSummary || err.message || 'Deployment failed.';
       writeDeploymentLog(deployment, `Deployment failed: ${deployment.errorSummary}`);
-      await captureDockerLogs(deployment);
     });
 }
 
-function streamDockerLogs(req, res, deployment) {
+async function streamWorkerLogs(res, deployment, follow) {
   if (!deployment.containerId) {
     sendText(res, 404, 'container_not_found\n');
     return;
   }
 
-  res.writeHead(200, {
-    'Content-Type': 'text/plain; charset=utf-8',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
+  try {
+    if (!follow) {
+      const logs = await workerRequest('POST', '/logs', {
+        containerId: deployment.containerId,
+        tail: DOCKER_LOG_TAIL,
+      });
+      sendText(res, 200, `${logs.payload.logs || ''}`);
+      return;
+    }
 
-  const parsed = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const follow = parsed.searchParams.get('follow') !== 'false';
-  const args = ['logs', '--timestamps', '--tail', '200'];
-  if (follow) args.push('-f');
-  args.push(deployment.containerId);
+    const endpoint = new URL('/logs?follow=true', `${WORKER_URL}/`);
+    const body = Buffer.from(JSON.stringify({ containerId: deployment.containerId, tail: DOCKER_LOG_TAIL }));
 
-  const child = spawn('docker', args, { cwd: REPO_PATH });
+    const workerReq = http.request({
+      protocol: endpoint.protocol,
+      hostname: endpoint.hostname,
+      port: endpoint.port,
+      path: `${endpoint.pathname}${endpoint.search}`,
+      method: 'POST',
+      headers: buildWorkerHeaders({ 'Content-Length': String(body.length) }),
+      timeout: WORKER_TIMEOUT_MS,
+    }, (workerRes) => {
+      res.writeHead(200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      workerRes.pipe(res);
+      workerRes.on('close', () => {
+        if (!res.writableEnded) res.end();
+      });
+    });
 
-  child.stdout.on('data', (chunk) => res.write(chunk));
-  child.stderr.on('data', (chunk) => res.write(chunk));
+    workerReq.on('error', (err) => {
+      if (!res.writableEnded) sendText(res, 502, `worker_log_stream_failed: ${err.message}\n`);
+    });
+    workerReq.on('timeout', () => workerReq.destroy(new Error('worker_log_stream_timeout')));
+    workerReq.write(body);
+    workerReq.end();
 
-  child.on('close', () => {
-    if (!res.writableEnded) res.end();
-  });
-
-  req.on('close', () => {
-    child.kill('SIGTERM');
-  });
+    res.on('close', () => workerReq.destroy());
+  } catch (err) {
+    sendText(res, 502, `worker_log_fetch_failed: ${err.message}\n`);
+  }
 }
 
 function proxyToDeployment(req, res, route) {
@@ -435,7 +456,7 @@ function proxyToDeployment(req, res, route) {
 
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, workerConfigured: !!(WORKER_URL && WORKER_TOKEN) });
     return;
   }
 
@@ -455,19 +476,22 @@ const server = http.createServer((req, res) => {
       assignedPort: latest.assignedPort,
       commands: latest.commands,
       testCommands: latest.testCommands,
+      worker: latest.worker,
     });
     return;
   }
 
   if (req.method === 'GET' && req.url.startsWith('/deployments/') && req.url.includes('/logs')) {
-    const parts = req.url.split('/');
+    const parsed = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const parts = parsed.pathname.split('/');
     const deploymentId = parts[2];
     const deployment = deployments.find((item) => item.id === deploymentId);
     if (!deployment) {
       sendText(res, 404, 'deployment_not_found\n');
       return;
     }
-    streamDockerLogs(req, res, deployment);
+    const follow = parsed.searchParams.get('follow') !== 'false';
+    streamWorkerLogs(res, deployment, follow);
     return;
   }
 
@@ -477,28 +501,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === 'POST' && req.url === '/deployments/trigger') {
-    let size = 0;
-    const chunks = [];
-
-    req.on('data', (chunk) => {
-      size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        sendJson(res, 413, { error: 'body_too_large' });
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-
-    req.on('end', () => {
-      let body;
-      try {
-        body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-      } catch {
-        sendJson(res, 400, { error: 'invalid_json' });
-        return;
-      }
-
+    readJsonBody(req, res, (body) => {
       const project = typeof body.project === 'string' ? body.project.trim() : '';
       const service = typeof body.service === 'string' ? body.service.trim() : '';
       const branch = typeof body.branch === 'string' ? body.branch.trim() : '';
@@ -527,6 +530,7 @@ const server = http.createServer((req, res) => {
         commands: [],
         testCommands: [],
         lastExitCode: null,
+        worker: null,
         createdAt: nowIso(),
         updatedAt: nowIso(),
       };
@@ -609,4 +613,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`phone-runner-server listening on http://${HOST}:${PORT}`);
   console.log(`repo path: ${REPO_PATH}`);
+  if (!WORKER_URL || !WORKER_TOKEN) {
+    console.log('worker integration disabled until WORKER_URL and WORKER_TOKEN are configured.');
+  }
 });
