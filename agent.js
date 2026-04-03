@@ -45,12 +45,73 @@ const DEFAULT_MODEL_CONFIG = {
   },
 };
 
+const TOOLS = Object.freeze({
+  git_checkout_branch: {
+    name: 'git_checkout_branch',
+    description: 'Create and switch to a task branch.',
+    risk: 'medium',
+  },
+  git_apply_patch: {
+    name: 'git_apply_patch',
+    description: 'Apply generated patch content to repository files.',
+    risk: 'medium',
+  },
+  git_commit: {
+    name: 'git_commit',
+    description: 'Create a commit from staged changes.',
+    risk: 'medium',
+  },
+  git_push: {
+    name: 'git_push',
+    description: 'Push local branch commits to remote origin.',
+    risk: 'high',
+  },
+  file_delete: {
+    name: 'file_delete',
+    description: 'Delete files from the working tree during rollback cleanup.',
+    risk: 'high',
+  },
+});
+
+const PERMISSIONS = Object.freeze({
+  low: 'allow',
+  medium: 'allow',
+  high: 'confirm',
+});
+
 function run(cmd, cwd) {
   return execSync(cmd, {
     cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
   }).trim();
+}
+
+function assertPermission(actionName, opts) {
+  const action = TOOLS[actionName];
+  if (!action) {
+    throw new Error(`Unknown action "${actionName}". Add it to TOOLS registry.`);
+  }
+
+  const requiredApproval = PERMISSIONS[action.risk];
+  if (!requiredApproval) {
+    throw new Error(`No permission mapping defined for risk level "${action.risk}".`);
+  }
+
+  if (requiredApproval === 'block') {
+    throw new Error(`Action blocked by policy: ${action.name}`);
+  }
+
+  if (requiredApproval === 'confirm') {
+    if (opts?.dryRun) {
+      throw new Error(`Action blocked in dry-run mode: ${action.name}`);
+    }
+    if (!(opts?.requireConfirm && opts?.confirmed)) {
+      throw new Error(
+        `Action "${action.name}" requires confirmation. Re-run with --confirm --yes to allow high-risk actions.`,
+      );
+    }
+  }
 }
 
 function hashFile(filePath) {
@@ -461,7 +522,8 @@ function sanitizeBranchName(task) {
   return `fix/${slug || 'task'}`;
 }
 
-function checkoutTaskBranch(repoPath, task, requestedBranch) {
+function checkoutTaskBranch(repoPath, task, requestedBranch, opts) {
+  assertPermission('git_checkout_branch', opts);
   const branchBase = sanitizeBranchName(requestedBranch || task);
   let branch = branchBase;
   let counter = 2;
@@ -531,7 +593,7 @@ function ensureUnifiedPatchForFile(rel, diffText) {
   return [`diff --git a/${rel} b/${rel}`, `--- a/${rel}`, `+++ b/${rel}`, diffText].join('\n');
 }
 
-function applyDiffChanges(repoPath, updates, selectedPathsSet, allowCreate, allowLargeDiff) {
+function applyDiffChanges(repoPath, updates, selectedPathsSet, allowCreate, allowLargeDiff, opts) {
   const patchChunks = [];
   const changedPaths = new Set();
 
@@ -613,6 +675,7 @@ function applyDiffChanges(repoPath, updates, selectedPathsSet, allowCreate, allo
 
   let applySucceeded = false;
   try {
+    assertPermission('git_apply_patch', opts);
     run(`git apply --check --whitespace=nowarn '${tmpPatch}'`, repoPath);
     run(`git apply --whitespace=nowarn '${tmpPatch}'`, repoPath);
     applySucceeded = true;
@@ -624,6 +687,7 @@ function applyDiffChanges(repoPath, updates, selectedPathsSet, allowCreate, allo
         fs.mkdirSync(path.dirname(full), { recursive: true });
         fs.copyFileSync(backupPath, full);
       } else if (createdFiles.includes(rel) && fs.existsSync(full)) {
+        assertPermission('file_delete', opts);
         fs.unlinkSync(full);
       }
     }
@@ -657,7 +721,7 @@ function ensureNotProtectedBranch(repoPath) {
   }
 }
 
-function commitAndPush(repoPath, commitMessage) {
+function commitAndPush(repoPath, commitMessage, opts) {
   ensureNotProtectedBranch(repoPath);
   run('git add .', repoPath);
 
@@ -670,9 +734,11 @@ function commitAndPush(repoPath, commitMessage) {
     return null;
   }
 
+  assertPermission('git_commit', opts);
   run(`git commit -m "${commitMessage.replace(/"/g, '\\"')}"`, repoPath);
 
   const branch = run('git rev-parse --abbrev-ref HEAD', repoPath);
+  assertPermission('git_push', opts);
   run(`git push -u origin '${branch}'`, repoPath);
 
   return {
@@ -710,7 +776,7 @@ async function main() {
   }
   const plan = opts.overrideMaxSteps ? planOut.plan : planOut.plan.slice(0, opts.maxSteps);
 
-  branch = checkoutTaskBranch(repoPath, task, planOut.branch);
+  branch = checkoutTaskBranch(repoPath, task, planOut.branch, opts);
   const allowCreate = taskAllowsCreatingFiles(task);
   const allowLargeDiff = taskAllowsLargeDiff(task);
   const allChangedPaths = new Set();
@@ -758,7 +824,14 @@ async function main() {
     }
 
     try {
-      const changedPaths = applyDiffChanges(repoPath, modelOut.files, selectedPathsSet, allowCreate, allowLargeDiff);
+      const changedPaths = applyDiffChanges(
+        repoPath,
+        modelOut.files,
+        selectedPathsSet,
+        allowCreate,
+        allowLargeDiff,
+        opts,
+      );
       for (const changedPath of changedPaths) allChangedPaths.add(changedPath);
       stepResults.push({ step, status: changedPaths.length ? 'applied' : 'no_changes', files: changedPaths });
       appendTaskHistory(repoPath, {
@@ -819,7 +892,7 @@ async function main() {
     console.log(` - ${file}`);
   }
 
-  const result = commitAndPush(repoPath, planOut.commitMessage);
+  const result = commitAndPush(repoPath, planOut.commitMessage, opts);
   if (!result) {
     appendTaskHistory(repoPath, {
       task,
