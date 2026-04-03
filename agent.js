@@ -27,6 +27,7 @@ const MAX_SELECTED_FILES = 12;
 const MAX_FILE_BYTES = 80_000;
 const MAX_PATCH_CHANGED_LINES = 200;
 const DEFAULT_MAX_CHANGED_FILES = 5;
+const DEFAULT_MAX_STEPS = 5;
 const TASK_HISTORY_FILE = '.agent.task-history.json';
 
 const DEFAULT_MODEL_CONFIG = {
@@ -65,6 +66,8 @@ function parseArgs(argv) {
     confirmed: false,
     overrideMaxFiles: false,
     maxFilesChanged: DEFAULT_MAX_CHANGED_FILES,
+    overrideMaxSteps: false,
+    maxSteps: DEFAULT_MAX_STEPS,
   };
 
   for (let i = 2; i < argv.length; i += 1) {
@@ -77,10 +80,17 @@ function parseArgs(argv) {
       opts.confirmed = true;
     } else if (arg === '--override-max-files') {
       opts.overrideMaxFiles = true;
+    } else if (arg === '--override-max-steps') {
+      opts.overrideMaxSteps = true;
     } else if (arg.startsWith('--max-files=')) {
       opts.maxFilesChanged = Number(arg.split('=')[1]);
+    } else if (arg.startsWith('--max-steps=')) {
+      opts.maxSteps = Number(arg.split('=')[1]);
     } else if (arg === '--max-files') {
       opts.maxFilesChanged = Number(argv[i + 1]);
+      i += 1;
+    } else if (arg === '--max-steps') {
+      opts.maxSteps = Number(argv[i + 1]);
       i += 1;
     } else {
       positionals.push(arg);
@@ -89,6 +99,9 @@ function parseArgs(argv) {
 
   if (!Number.isInteger(opts.maxFilesChanged) || opts.maxFilesChanged < 1) {
     throw new Error(`Invalid --max-files value: ${opts.maxFilesChanged}`);
+  }
+  if (!Number.isInteger(opts.maxSteps) || opts.maxSteps < 1) {
+    throw new Error(`Invalid --max-steps value: ${opts.maxSteps}`);
   }
 
   return { positionals, opts };
@@ -231,6 +244,27 @@ function buildPrompt(task, treeSample, selectedFiles) {
   ].join('\n');
 }
 
+function buildPlanPrompt(task, treeSample, selectedFiles, maxSteps) {
+  return [
+    'You are a senior software engineer planning a safe, incremental implementation.',
+    'Return strict JSON with this exact shape and nothing else:',
+    '{"plan":["step 1","step 2"],"branch":"string","commit_message":"string"}',
+    'Rules:',
+    `- Create an ordered plan with at most ${maxSteps} steps.`,
+    '- Keep each step independently executable and testable.',
+    '- Keep steps concrete and specific to this repository.',
+    '- Do not include markdown fences.',
+    '',
+    `Task: ${task}`,
+    '',
+    `Repository tree sample (${treeSample.length} files):`,
+    JSON.stringify(treeSample, null, 2),
+    '',
+    'Selected relevant files (full content):',
+    JSON.stringify(selectedFiles, null, 2),
+  ].join('\n');
+}
+
 function readJsonFile(filePath) {
   const raw = fs.readFileSync(filePath, 'utf8');
   return JSON.parse(raw);
@@ -345,6 +379,35 @@ function normalizePatchResponse(parsed) {
   return { branch, commitMessage, files };
 }
 
+function normalizePlanResponse(parsed, fallbackTask) {
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.plan)) {
+    throw new Error('Invalid model JSON shape. Expected object with plan array.');
+  }
+
+  const plan = parsed.plan
+    .filter((s) => typeof s === 'string')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (plan.length === 0) {
+    return {
+      plan: [fallbackTask],
+      branch: null,
+      commitMessage: 'Apply automated code updates',
+    };
+  }
+
+  const branch =
+    typeof parsed.branch === 'string' && parsed.branch.trim().length > 0 ? parsed.branch.trim() : null;
+
+  const commitMessage =
+    typeof parsed.commit_message === 'string' && parsed.commit_message.trim().length > 0
+      ? parsed.commit_message.trim()
+      : 'Apply automated code updates';
+
+  return { plan, branch, commitMessage };
+}
+
 async function generatePatch(task, files, modelConfig) {
   const prompt = buildPrompt(task, files.treeSample, files.selectedFiles);
   const providerKey = String(modelConfig.provider || '').toLowerCase();
@@ -365,6 +428,27 @@ async function generatePatch(task, files, modelConfig) {
   }
 
   return normalizePatchResponse(parsed);
+}
+
+async function generatePlan(task, files, modelConfig, maxSteps) {
+  const prompt = buildPlanPrompt(task, files.treeSample, files.selectedFiles, maxSteps);
+  const providerKey = String(modelConfig.provider || '').toLowerCase();
+  const adapter = MODEL_ADAPTERS[providerKey];
+
+  if (!adapter) {
+    const providers = Object.keys(MODEL_ADAPTERS).join(', ');
+    throw new Error(`Unsupported provider "${modelConfig.provider}". Supported providers: ${providers}`);
+  }
+
+  const rawContent = await adapter(prompt, modelConfig);
+  let parsed;
+  try {
+    parsed = JSON.parse(rawContent);
+  } catch {
+    throw new Error(`Model returned non-JSON content: ${rawContent}`);
+  }
+
+  return normalizePlanResponse(parsed, task);
 }
 
 function sanitizeBranchName(task) {
@@ -605,7 +689,7 @@ async function main() {
 
   if (!task || !repoInput) {
     console.error(
-      'Usage: node agent.js [--dry-run] [--confirm --yes] [--max-files N] [--override-max-files] "<task>" <repo-path>',
+      'Usage: node agent.js [--dry-run] [--confirm --yes] [--max-files N] [--override-max-files] [--max-steps N] [--override-max-steps] "<task>" <repo-path>',
     );
     process.exit(1);
   }
@@ -616,49 +700,96 @@ async function main() {
   const modelConfig = loadModelConfig();
   const { scored, treeSample } = collectRepoTree(repoPath, task);
   const selectedFiles = selectRelevantFiles(repoPath, scored);
-  const selectedPathsSet = new Set(selectedFiles.map((f) => f.path));
 
   let branch = null;
-  const modelOut = await generatePatch(task, { treeSample, selectedFiles }, modelConfig);
-
-  if (!opts.overrideMaxFiles && modelOut.files.length > opts.maxFilesChanged) {
+  const planOut = await generatePlan(task, { treeSample, selectedFiles }, modelConfig, opts.maxSteps);
+  if (!opts.overrideMaxSteps && planOut.plan.length > opts.maxSteps) {
     throw new Error(
-      `Patch touches ${modelOut.files.length} files, exceeding max ${opts.maxFilesChanged}. Use --override-max-files to allow.`,
+      `Plan has ${planOut.plan.length} steps, exceeding max ${opts.maxSteps}. Use --override-max-steps to allow.`,
     );
   }
+  const plan = opts.overrideMaxSteps ? planOut.plan : planOut.plan.slice(0, opts.maxSteps);
 
-  branch = checkoutTaskBranch(repoPath, task, modelOut.branch);
+  branch = checkoutTaskBranch(repoPath, task, planOut.branch);
   const allowCreate = taskAllowsCreatingFiles(task);
   const allowLargeDiff = taskAllowsLargeDiff(task);
-  const patchChunks = modelOut.files.map((f) => ensureUnifiedPatchForFile(normalizeRelPath(f.path), f.diff).trimEnd());
-  const patchPreview = patchChunks.length ? `${patchChunks.join('\n\n')}\n` : '';
-
-  if (opts.dryRun) {
-    console.log('Dry-run mode enabled. Diff preview (no apply):');
-    console.log(patchPreview);
-    appendTaskHistory(repoPath, {
-      task,
-      branch,
-      status: 'dry_run',
-      files: modelOut.files.map((f) => f.path),
-    });
-    return;
-  }
+  const allChangedPaths = new Set();
+  const stepResults = [];
 
   if (opts.requireConfirm && !opts.confirmed) {
     console.log('Confirmation required. Re-run with --confirm --yes to apply changes.');
-    console.log('Diff preview (not applied):');
-    console.log(patchPreview);
+    console.log('Planned steps (not applied):');
+    for (let i = 0; i < plan.length; i += 1) {
+      console.log(` ${i + 1}. ${plan[i]}`);
+    }
     appendTaskHistory(repoPath, {
       task,
       branch,
       status: 'awaiting_confirmation',
-      files: modelOut.files.map((f) => f.path),
+      plan,
     });
     return;
   }
 
-  const changedPaths = applyDiffChanges(repoPath, modelOut.files, selectedPathsSet, allowCreate, allowLargeDiff);
+  for (let index = 0; index < plan.length; index += 1) {
+    const step = plan[index];
+    const stepTask = `Overall task: ${task}\nCurrent step ${index + 1}/${plan.length}: ${step}`;
+    const stepTree = collectRepoTree(repoPath, stepTask);
+    const stepSelectedFiles = selectRelevantFiles(repoPath, stepTree.scored);
+    const selectedPathsSet = new Set(stepSelectedFiles.map((f) => f.path));
+    const modelOut = await generatePatch(stepTask, { treeSample: stepTree.treeSample, selectedFiles: stepSelectedFiles }, modelConfig);
+
+    if (!opts.overrideMaxFiles && modelOut.files.length > opts.maxFilesChanged) {
+      throw new Error(
+        `Step ${index + 1} patch touches ${modelOut.files.length} files, exceeding max ${opts.maxFilesChanged}. Use --override-max-files to allow.`,
+      );
+    }
+
+    const patchChunks = modelOut.files.map((f) =>
+      ensureUnifiedPatchForFile(normalizeRelPath(f.path), f.diff).trimEnd(),
+    );
+    const patchPreview = patchChunks.length ? `${patchChunks.join('\n\n')}\n` : '';
+
+    if (opts.dryRun) {
+      console.log(`Dry-run mode enabled. Step ${index + 1} diff preview (no apply):`);
+      console.log(patchPreview);
+      stepResults.push({ step, status: 'dry_run', files: modelOut.files.map((f) => f.path) });
+      continue;
+    }
+
+    try {
+      const changedPaths = applyDiffChanges(repoPath, modelOut.files, selectedPathsSet, allowCreate, allowLargeDiff);
+      for (const changedPath of changedPaths) allChangedPaths.add(changedPath);
+      stepResults.push({ step, status: changedPaths.length ? 'applied' : 'no_changes', files: changedPaths });
+      appendTaskHistory(repoPath, {
+        task,
+        branch,
+        status: 'step_completed',
+        step_index: index + 1,
+        step,
+        files: changedPaths,
+      });
+      for (const changedPath of changedPaths) {
+        const fullPath = path.join(repoPath, changedPath);
+        if (fs.existsSync(fullPath)) {
+          fs.readFileSync(fullPath, 'utf8');
+        }
+      }
+    } catch (err) {
+      stepResults.push({ step, status: 'failed', error: err.message });
+      appendTaskHistory(repoPath, {
+        task,
+        branch,
+        status: 'step_failed',
+        step_index: index + 1,
+        step,
+        error: err.message,
+      });
+      throw err;
+    }
+  }
+
+  const changedPaths = Array.from(allChangedPaths);
 
   if (changedPaths.length === 0) {
     appendTaskHistory(repoPath, {
@@ -666,13 +797,15 @@ async function main() {
       branch,
       status: 'no_changes',
       files: [],
+      plan,
+      step_results: stepResults,
     });
     console.log(
       JSON.stringify(
         {
           files: [],
           branch,
-          commit_message: modelOut.commitMessage,
+          commit_message: planOut.commitMessage,
         },
         null,
         2,
@@ -686,20 +819,22 @@ async function main() {
     console.log(` - ${file}`);
   }
 
-  const result = commitAndPush(repoPath, modelOut.commitMessage);
+  const result = commitAndPush(repoPath, planOut.commitMessage);
   if (!result) {
     appendTaskHistory(repoPath, {
       task,
       branch,
       status: 'no_staged_changes',
       files: [],
+      plan,
+      step_results: stepResults,
     });
     console.log(
       JSON.stringify(
         {
           files: [],
           branch,
-          commit_message: modelOut.commitMessage,
+          commit_message: planOut.commitMessage,
         },
         null,
         2,
@@ -714,6 +849,8 @@ async function main() {
     status: 'committed',
     files: result.files,
     commit_message: result.commit_message,
+    plan,
+    step_results: stepResults,
   });
   console.log(JSON.stringify(result, null, 2));
 }
