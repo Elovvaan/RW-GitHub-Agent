@@ -66,6 +66,47 @@ function sendText(res, code, text) {
   res.end(text);
 }
 
+function buildRouteDomain(project, service) {
+  return `${sanitizeName(service)}.${sanitizeName(project)}.local`;
+}
+
+function extractHostName(hostHeader) {
+  const value = String(hostHeader || '').trim();
+  if (!value) return '';
+  return value.replace(/:\d+$/, '').toLowerCase();
+}
+
+function collectActiveRoutes() {
+  const latestByRouteKey = new Map();
+
+  for (const deployment of deployments) {
+    if (!deployment.assignedPort) continue;
+    if (deployment.status !== 'success' && deployment.status !== 'health_check' && deployment.status !== 'running') continue;
+    const key = `${sanitizeName(deployment.project)}/${sanitizeName(deployment.service)}`;
+    const current = latestByRouteKey.get(key);
+    if (!current || new Date(deployment.updatedAt).getTime() >= new Date(current.updatedAt).getTime()) {
+      latestByRouteKey.set(key, deployment);
+    }
+  }
+
+  return Array.from(latestByRouteKey.values()).map((deployment) => ({
+    domain: deployment.domain || buildRouteDomain(deployment.project, deployment.service),
+    project: deployment.project,
+    service: deployment.service,
+    port: deployment.assignedPort,
+    deploymentId: deployment.id,
+    status: deployment.status,
+    updatedAt: deployment.updatedAt,
+  }));
+}
+
+function findRouteByHost(hostHeader) {
+  const hostName = extractHostName(hostHeader);
+  if (!hostName) return null;
+  const routes = collectActiveRoutes();
+  return routes.find((route) => route.domain === hostName) || null;
+}
+
 function extractJson(stdoutText) {
   const lines = String(stdoutText || '').trim();
   const idx = lines.lastIndexOf('{');
@@ -362,6 +403,36 @@ function streamDockerLogs(req, res, deployment) {
   });
 }
 
+function proxyToDeployment(req, res, route) {
+  const proxyRequest = http.request({
+    hostname: '127.0.0.1',
+    port: route.port,
+    method: req.method,
+    path: req.url,
+    headers: {
+      ...req.headers,
+      host: route.domain,
+      connection: 'close',
+    },
+  }, (proxyResponse) => {
+    res.writeHead(proxyResponse.statusCode || 502, proxyResponse.headers);
+    proxyResponse.pipe(res);
+  });
+
+  proxyRequest.on('error', (err) => {
+    sendJson(res, 502, {
+      error: 'route_proxy_failed',
+      message: err.message,
+      domain: route.domain,
+      project: route.project,
+      service: route.service,
+      port: route.port,
+    });
+  });
+
+  req.pipe(proxyRequest);
+}
+
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     sendJson(res, 200, { ok: true });
@@ -397,6 +468,11 @@ const server = http.createServer((req, res) => {
       return;
     }
     streamDockerLogs(req, res, deployment);
+    return;
+  }
+
+  if (req.method === 'GET' && req.url === '/route') {
+    sendJson(res, 200, { routes: collectActiveRoutes() });
     return;
   }
 
@@ -446,6 +522,7 @@ const server = http.createServer((req, res) => {
         containerName: null,
         containerId: null,
         assignedPort: null,
+        domain: buildRouteDomain(project, service),
         logs: [],
         commands: [],
         testCommands: [],
@@ -468,7 +545,13 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method !== 'POST' || req.url !== '/run') {
-    sendJson(res, 404, { error: 'not_found' });
+    const route = findRouteByHost(req.headers.host);
+    if (!route) {
+      sendJson(res, 404, { error: 'not_found' });
+      return;
+    }
+    console.log(`[router] host=${extractHostName(req.headers.host)} project=${route.project} service=${route.service} targetPort=${route.port} method=${req.method} path=${req.url}`);
+    proxyToDeployment(req, res, route);
     return;
   }
 
