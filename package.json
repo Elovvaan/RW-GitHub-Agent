@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node phone-runner-server.js",
     "agent": "node agent.js",
-    "eval": "node agent.js --eval"
+    "eval": "node agent.js --eval",
+    "worker": "node worker-server.js"
   },
   "engines": {
     "node": ">=20"

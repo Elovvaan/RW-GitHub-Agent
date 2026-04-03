@@ -9,16 +9,22 @@ A lean Node.js agent for a private workflow:
 - commits and pushes to GitHub
 - exposes a tiny HTTP endpoint so you can trigger runs from your phone
 
+## Control plane + worker deployment architecture
+- **Control plane**: `phone-runner-server.js` keeps the existing agent contract (`POST /run`) and deployment routes (`/deployments/*`, `/route`).
+- **Runtime worker**: `worker-server.js` runs on a Docker-enabled VPS and executes Docker build/run/stop/log/health actions.
+- Shared auth: control plane calls worker endpoints using `Authorization: Bearer $WORKER_TOKEN`.
+
 ## Files
 - `agent.js` – core repo-aware coding agent
-- `phone-runner-server.js` – tiny HTTP runner (`POST /run`)
+- `phone-runner-server.js` – control plane HTTP runner and deployment router
+- `worker-server.js` – VPS runtime worker for Docker operations
 - `package.json` – scripts + runtime metadata
 - `.replit` – Replit run/deploy config
 - `replit.nix` – Node + git environment
 - `.env.example` – required secrets/config variables
 
 ## Environment variables
-Set these in Replit **Secrets**:
+Set these in Replit **Secrets** (control plane):
 
 - `OPENAI_API_KEY` – OpenAI API key
 - `OPENAI_MODEL` – model name (example: `gpt-4.1-mini`)
@@ -26,28 +32,24 @@ Set these in Replit **Secrets**:
 - `GITHUB_TOKEN` – GitHub personal access token with repo write access
 - `REPO_PATH` – absolute path to the local checked-out repo to edit
 - `BASE_BRANCH` – base branch for agent branches (example: `main`)
-- `PORT` – server port (default: `3000`)
+- `PORT` – control plane port (default: `3000`)
+- `WORKER_URL` – full base URL to worker (example: `http://10.0.0.42:3400`)
+- `WORKER_TOKEN` – shared bearer token for worker auth
 
-## Replit setup (exact)
-1. Create a Replit Node.js repl and upload these files.
-2. Open **Shell** and run:
-   ```bash
-   npm install
-   ```
-   (No external dependencies are required, but this initializes lockfiles if wanted.)
-3. Add all variables from `.env.example` into **Secrets**.
-4. Ensure your target repo exists on disk at `REPO_PATH` and has `origin` configured to GitHub using the token.
-   - Example remote with token:
-     ```bash
-     git -C "$REPO_PATH" remote set-url origin "https://$GITHUB_TOKEN@github.com/OWNER/REPO.git"
-     ```
-5. Click **Run**. Replit executes `npm start` (from `.replit`).
+Set these on the worker VPS:
+- `PORT` – worker port (default `3400`)
+- `WORKER_TOKEN` – same shared bearer token
 
 ## Run locally in shell
 
-### Start server
+### Start control plane
 ```bash
 npm start
+```
+
+### Start worker
+```bash
+npm run worker
 ```
 
 ### Run agent directly
@@ -55,67 +57,72 @@ npm start
 npm run agent -- "add a health check endpoint" "$REPO_PATH" --confirm --yes
 ```
 
-### Evaluate agent capability checks
+## Control plane endpoints (unchanged)
+- `POST /run`
+- `POST /deployments/trigger`
+- `GET /deployments/latest`
+- `GET /deployments/:deploymentId/logs`
+- `GET /route`
+- `GET /health`
+
+## Worker endpoints (new)
+- `POST /build`
+- `POST /run`
+- `POST /stop`
+- `POST /logs`
+- `POST /health`
+- `GET /health` (worker process health)
+
+## Example curl tests
+
+### Worker health
 ```bash
-npm run eval
+curl -sS "${WORKER_URL}/health"
 ```
 
-## Test `/run`
-Use curl:
+### Worker build
 ```bash
-curl -sS -X POST "http://127.0.0.1:${PORT:-3000}/run" \
+curl -sS -X POST "${WORKER_URL}/build" \
+  -H "Authorization: Bearer ${WORKER_TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"task":"add request logging to phone-runner-server.js"}'
+  -d '{"repoPath":"/srv/app","branch":"main","commitSha":"<sha>","imageTag":"demo-main-<sha>","dockerfile":"Dockerfile"}'
 ```
 
-Expected JSON shape:
-```json
-{
-  "started": true,
-  "success": true,
-  "error": null,
-  "branch": "agent/2026-04-03-add-request-logging-ab12",
-  "commit_message": "agent: add request logging to phone-runner-server.js"
-}
+### Worker run
+```bash
+curl -sS -X POST "${WORKER_URL}/run" \
+  -H "Authorization: Bearer ${WORKER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"imageTag":"demo-main-<sha>","containerName":"demo-service","assignedPort":4100,"containerInternalPort":3000,"labels":{"deployment_id":"dep_0001"}}'
 ```
 
-## Trigger from phone
-
-### Option A: browser-based trigger (fastest)
-Use a mobile HTTP client (or Shortcuts app web request) to send `POST /run` with JSON:
-```json
-{ "task": "your plain-English task" }
+### Worker stop
+```bash
+curl -sS -X POST "${WORKER_URL}/stop" \
+  -H "Authorization: Bearer ${WORKER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"containerName":"demo-service","remove":true}'
 ```
 
-### Option B: iOS Shortcuts
-1. New Shortcut → **Get Contents of URL**.
-2. Method: `POST`.
-3. URL: your Replit deployment URL + `/run`.
-4. Request Body: JSON → key `task` value from an input prompt.
-5. Show Result.
+### Worker logs
+```bash
+curl -sS -X POST "${WORKER_URL}/logs" \
+  -H "Authorization: Bearer ${WORKER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"containerId":"<container-id>","tail":200}'
+```
 
-## GitHub token setup
-1. GitHub → **Settings** → **Developer settings** → **Personal access tokens**.
-2. Create fine-grained token with:
-   - repository access to your private repo
-   - permissions: **Contents: Read and write**
-   - if needed, **Pull requests: Read and write**
-3. Save token as Replit Secret: `GITHUB_TOKEN`.
-4. Ensure your repo remote uses that token (see setup section).
+### Worker health probe to deployed service
+```bash
+curl -sS -X POST "${WORKER_URL}/health" \
+  -H "Authorization: Bearer ${WORKER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"assignedPort":4100,"path":"/health","timeoutMs":1500}'
+```
 
-## Agent behavior highlights
-- **Repo-aware file selection** via keyword scoring over `git ls-files`.
-- **Diff-based patching** using generated unified diffs and `git apply`.
-- **Tool registry** with `name`, `description`, `risk` and policy checks.
-- **Permission system** with allow/block/confirm behavior.
-- **Workflow state persistence** in `.agent-workflow-state.json`.
-- **Resumable multi-step execution** (`--resume`).
-- **Rollback** (`git reset --hard` + `git clean -fd`) if patch apply fails.
-- **Modes**:
-  - `--dry-run` (plan only)
-  - `--confirm --yes` (explicit approval flow)
-  - `--eval` (capability self-check)
-- **Structured JSON output** for reliable automation.
-
-## Security note
-This is for private internal use. Do not expose publicly without adding your own authentication and network restrictions.
+### Trigger deployment from control plane
+```bash
+curl -sS -X POST "http://127.0.0.1:${PORT:-3000}/deployments/trigger" \
+  -H "Content-Type: application/json" \
+  -d '{"project":"demo","service":"api","branch":"main","commitSha":"<sha>"}'
+```
