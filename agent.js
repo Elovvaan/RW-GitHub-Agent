@@ -123,6 +123,7 @@ function hashFile(filePath) {
 function parseArgs(argv) {
   const positionals = [];
   const opts = {
+    evalMode: false,
     dryRun: false,
     requireConfirm: false,
     confirmed: false,
@@ -134,7 +135,9 @@ function parseArgs(argv) {
 
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--dry-run') {
+    if (arg === '--eval') {
+      opts.evalMode = true;
+    } else if (arg === '--dry-run') {
       opts.dryRun = true;
     } else if (arg === '--confirm') {
       opts.requireConfirm = true;
@@ -167,6 +170,133 @@ function parseArgs(argv) {
   }
 
   return { positionals, opts };
+}
+
+function runEvaluation() {
+  const source = fs.readFileSync(__filename, 'utf8');
+
+  function has(pattern) {
+    return pattern.test(source);
+  }
+
+  function finding({ category, check, present, severityIfMissing, risks, fixes, evidence }) {
+    return {
+      category,
+      check,
+      status: present ? 'present' : 'missing',
+      severity: present ? 'none' : severityIfMissing,
+      risks: present ? [] : risks,
+      suggested_fixes: present ? [] : fixes,
+      evidence,
+    };
+  }
+
+  const primitiveFindings = [
+    finding({
+      category: 'state',
+      check: 'workflow_state_tracking',
+      present:
+        has(/WORKFLOW_STATE_FILE/) &&
+        has(/function loadWorkflowState\(/) &&
+        has(/function saveWorkflowState\(/) &&
+        has(/function createWorkflowState\(/),
+      severityIfMissing: 'high',
+      risks: ['Cannot resume interrupted workflows.', 'No reliable execution state for multi-step plans.'],
+      fixes: [
+        'Define a persistent workflow state file.',
+        'Implement load/save helpers and initialize state before execution.',
+      ],
+      evidence: ['WORKFLOW_STATE_FILE', 'loadWorkflowState', 'saveWorkflowState', 'createWorkflowState'],
+    }),
+    finding({
+      category: 'permissions',
+      check: 'risk_mapped_permissions',
+      present: has(/const TOOLS = Object\.freeze/) && has(/const PERMISSIONS = Object\.freeze/) && has(/function assertPermission\(/),
+      severityIfMissing: 'critical',
+      risks: ['Unsafe operations may execute without checks.', 'High-risk actions may bypass confirmation gates.'],
+      fixes: [
+        'Define a central tool registry with risk classifications.',
+        'Enforce approval mapping in a shared permission assertion function.',
+      ],
+      evidence: ['TOOLS', 'PERMISSIONS', 'assertPermission'],
+    }),
+    finding({
+      category: 'limits',
+      check: 'operational_limits_defined',
+      present:
+        has(/MAX_PATCH_CHANGED_LINES/) &&
+        has(/DEFAULT_MAX_CHANGED_FILES/) &&
+        has(/DEFAULT_MAX_STEPS/) &&
+        has(/countChangedPatchLines\(/),
+      severityIfMissing: 'high',
+      risks: ['Unbounded changes can create oversized patches.', 'Model output may touch too many files or steps.'],
+      fixes: [
+        'Add hard caps for changed lines, changed files, and plan steps.',
+        'Validate limits before applying or committing changes.',
+      ],
+      evidence: ['MAX_PATCH_CHANGED_LINES', 'DEFAULT_MAX_CHANGED_FILES', 'DEFAULT_MAX_STEPS', 'countChangedPatchLines'],
+    }),
+    finding({
+      category: 'recovery',
+      check: 'rollback_and_resume_controls',
+      present: has(/Patch apply failed\. Rolled back files from backup\./) && has(/loadWorkflowState\(/) && has(/completedSteps/),
+      severityIfMissing: 'high',
+      risks: ['Failed patch apply can leave repository in partial state.', 'Interrupted workflows cannot safely continue.'],
+      fixes: [
+        'Snapshot touched files and restore on apply failure.',
+        'Persist progress markers for completed steps and current position.',
+      ],
+      evidence: ['backup/rollback logic in applyDiffChanges', 'workflow resume via completedSteps/currentStep'],
+    }),
+  ];
+
+  const guardrailFindings = [
+    finding({
+      category: 'guardrail',
+      check: 'destructive_actions_confirmation',
+      present: has(/file_delete[\s\S]*risk:\s*'high'/) && has(/requiredApproval === 'confirm'/),
+      severityIfMissing: 'critical',
+      risks: ['Destructive cleanup may run without explicit user consent.'],
+      fixes: ['Mark destructive actions as high risk and require --confirm --yes before execution.'],
+      evidence: ['TOOLS.file_delete risk=high', 'assertPermission confirm gate'],
+    }),
+    finding({
+      category: 'guardrail',
+      check: 'patch_limits_enforced',
+      present: has(/changedLineCount > MAX_PATCH_CHANGED_LINES/) && has(/modelOut\.files\.length > opts\.maxFilesChanged/),
+      severityIfMissing: 'high',
+      risks: ['Generated patches may exceed safe review/apply size.'],
+      fixes: ['Reject oversized diffs by line count and cap files per step unless explicitly overridden.'],
+      evidence: ['MAX_PATCH_CHANGED_LINES check', 'max files changed check'],
+    }),
+    finding({
+      category: 'guardrail',
+      check: 'git_safety_controls',
+      present: has(/ensureGitRepo\(/) && has(/ensureNotProtectedBranch\(/) && has(/git apply --check/),
+      severityIfMissing: 'high',
+      risks: ['Commands may run outside a repository.', 'Commits may be created on protected branches.'],
+      fixes: ['Validate git work-tree context.', 'Block commits on main/master.', 'Preflight patch validity with git apply --check.'],
+      evidence: ['ensureGitRepo', 'ensureNotProtectedBranch', 'git apply --check'],
+    }),
+  ];
+
+  const findings = [...primitiveFindings, ...guardrailFindings];
+  const severityRank = { none: 0, low: 1, medium: 2, high: 3, critical: 4 };
+  const highestSeverity = findings.reduce((max, item) => {
+    return severityRank[item.severity] > severityRank[max] ? item.severity : max;
+  }, 'none');
+
+  return {
+    mode: 'evaluation',
+    summary: {
+      total_checks: findings.length,
+      missing_checks: findings.filter((f) => f.status === 'missing').length,
+      highest_severity: highestSeverity,
+      guardrail_checks: guardrailFindings.length,
+      primitive_checks: primitiveFindings.length,
+    },
+    findings,
+  };
 }
 
 function appendTaskHistory(repoPath, entry) {
@@ -781,12 +911,17 @@ function commitAndPush(repoPath, commitMessage, opts) {
 
 async function main() {
   const { positionals, opts } = parseArgs(process.argv);
+  if (opts.evalMode) {
+    console.log(JSON.stringify(runEvaluation(), null, 2));
+    return;
+  }
+
   const task = positionals[0];
   const repoInput = positionals[1];
 
   if (!task || !repoInput) {
     console.error(
-      'Usage: node agent.js [--dry-run] [--confirm --yes] [--max-files N] [--override-max-files] [--max-steps N] [--override-max-steps] "<task>" <repo-path>',
+      'Usage: node agent.js [--eval] [--dry-run] [--confirm --yes] [--max-files N] [--override-max-files] [--max-steps N] [--override-max-steps] "<task>" <repo-path>',
     );
     process.exit(1);
   }
