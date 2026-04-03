@@ -29,6 +29,7 @@ const MAX_PATCH_CHANGED_LINES = 200;
 const DEFAULT_MAX_CHANGED_FILES = 5;
 const DEFAULT_MAX_STEPS = 5;
 const TASK_HISTORY_FILE = '.agent.task-history.json';
+const WORKFLOW_STATE_FILE = '.agent.workflow-state.json';
 
 const DEFAULT_MODEL_CONFIG = {
   provider: 'openai',
@@ -182,6 +183,36 @@ function appendTaskHistory(repoPath, entry) {
 
   history.push({ timestamp: new Date().toISOString(), ...entry });
   fs.writeFileSync(historyPath, JSON.stringify(history, null, 2) + '\n', 'utf8');
+}
+
+function getWorkflowStatePath(repoPath) {
+  return path.join(repoPath, WORKFLOW_STATE_FILE);
+}
+
+function loadWorkflowState(repoPath) {
+  const workflowPath = getWorkflowStatePath(repoPath);
+  if (!fs.existsSync(workflowPath)) return null;
+  const raw = fs.readFileSync(workflowPath, 'utf8');
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object') return null;
+  if (!Array.isArray(parsed.plan)) return null;
+  if (!Array.isArray(parsed.completedSteps)) return null;
+  return parsed;
+}
+
+function saveWorkflowState(repoPath, state) {
+  const workflowPath = getWorkflowStatePath(repoPath);
+  fs.writeFileSync(workflowPath, JSON.stringify(state, null, 2) + '\n', 'utf8');
+}
+
+function createWorkflowState(plan) {
+  return {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
+    status: 'planned',
+    currentStep: 0,
+    plan,
+    completedSteps: [],
+  };
 }
 
 function ensureGitRepo(repoPath) {
@@ -764,19 +795,46 @@ async function main() {
   ensureGitRepo(repoPath);
 
   const modelConfig = loadModelConfig();
-  const { scored, treeSample } = collectRepoTree(repoPath, task);
-  const selectedFiles = selectRelevantFiles(repoPath, scored);
-
+  let workflowState = loadWorkflowState(repoPath);
+  let planOut = null;
   let branch = null;
-  const planOut = await generatePlan(task, { treeSample, selectedFiles }, modelConfig, opts.maxSteps);
-  if (!opts.overrideMaxSteps && planOut.plan.length > opts.maxSteps) {
-    throw new Error(
-      `Plan has ${planOut.plan.length} steps, exceeding max ${opts.maxSteps}. Use --override-max-steps to allow.`,
-    );
-  }
-  const plan = opts.overrideMaxSteps ? planOut.plan : planOut.plan.slice(0, opts.maxSteps);
+  let plan = null;
 
-  branch = checkoutTaskBranch(repoPath, task, planOut.branch, opts);
+  if (
+    workflowState &&
+    (workflowState.status === 'planned' || workflowState.status === 'executing') &&
+    workflowState.currentStep < workflowState.plan.length
+  ) {
+    plan = workflowState.plan;
+    branch = workflowState.branch || null;
+    if (branch) {
+      run(`git checkout '${branch}'`, repoPath);
+    }
+    console.log(
+      `Resuming workflow ${workflowState.id} from step ${workflowState.currentStep + 1}/${workflowState.plan.length}`,
+    );
+    planOut = {
+      commitMessage: workflowState.commitMessage || 'Apply automated code updates',
+      branch,
+    };
+  } else {
+    const { scored, treeSample } = collectRepoTree(repoPath, task);
+    const selectedFiles = selectRelevantFiles(repoPath, scored);
+    planOut = await generatePlan(task, { treeSample, selectedFiles }, modelConfig, opts.maxSteps);
+    if (!opts.overrideMaxSteps && planOut.plan.length > opts.maxSteps) {
+      throw new Error(
+        `Plan has ${planOut.plan.length} steps, exceeding max ${opts.maxSteps}. Use --override-max-steps to allow.`,
+      );
+    }
+    plan = opts.overrideMaxSteps ? planOut.plan : planOut.plan.slice(0, opts.maxSteps);
+    branch = checkoutTaskBranch(repoPath, task, planOut.branch, opts);
+    workflowState = createWorkflowState(plan);
+    workflowState.branch = branch;
+    workflowState.task = task;
+    workflowState.commitMessage = planOut.commitMessage;
+    saveWorkflowState(repoPath, workflowState);
+  }
+
   const allowCreate = taskAllowsCreatingFiles(task);
   const allowLargeDiff = taskAllowsLargeDiff(task);
   const allChangedPaths = new Set();
@@ -797,7 +855,21 @@ async function main() {
     return;
   }
 
+  workflowState.status = 'executing';
+  saveWorkflowState(repoPath, workflowState);
+
   for (let index = 0; index < plan.length; index += 1) {
+    if (workflowState.completedSteps.includes(index)) {
+      stepResults.push({ step: plan[index], status: 'skipped_already_completed', files: [] });
+      workflowState.currentStep = Math.max(workflowState.currentStep, index + 1);
+      saveWorkflowState(repoPath, workflowState);
+      continue;
+    }
+    if (index < workflowState.currentStep) {
+      stepResults.push({ step: plan[index], status: 'skipped_previously_advanced', files: [] });
+      continue;
+    }
+
     const step = plan[index];
     const stepTask = `Overall task: ${task}\nCurrent step ${index + 1}/${plan.length}: ${step}`;
     const stepTree = collectRepoTree(repoPath, stepTask);
@@ -820,6 +892,9 @@ async function main() {
       console.log(`Dry-run mode enabled. Step ${index + 1} diff preview (no apply):`);
       console.log(patchPreview);
       stepResults.push({ step, status: 'dry_run', files: modelOut.files.map((f) => f.path) });
+      workflowState.completedSteps.push(index);
+      workflowState.currentStep = index + 1;
+      saveWorkflowState(repoPath, workflowState);
       continue;
     }
 
@@ -834,6 +909,9 @@ async function main() {
       );
       for (const changedPath of changedPaths) allChangedPaths.add(changedPath);
       stepResults.push({ step, status: changedPaths.length ? 'applied' : 'no_changes', files: changedPaths });
+      workflowState.completedSteps.push(index);
+      workflowState.currentStep = index + 1;
+      saveWorkflowState(repoPath, workflowState);
       appendTaskHistory(repoPath, {
         task,
         branch,
@@ -850,6 +928,9 @@ async function main() {
       }
     } catch (err) {
       stepResults.push({ step, status: 'failed', error: err.message });
+      workflowState.status = 'failed';
+      workflowState.currentStep = index;
+      saveWorkflowState(repoPath, workflowState);
       appendTaskHistory(repoPath, {
         task,
         branch,
@@ -865,6 +946,9 @@ async function main() {
   const changedPaths = Array.from(allChangedPaths);
 
   if (changedPaths.length === 0) {
+    workflowState.status = 'completed';
+    workflowState.currentStep = plan.length;
+    saveWorkflowState(repoPath, workflowState);
     appendTaskHistory(repoPath, {
       task,
       branch,
@@ -894,6 +978,9 @@ async function main() {
 
   const result = commitAndPush(repoPath, planOut.commitMessage, opts);
   if (!result) {
+    workflowState.status = 'completed';
+    workflowState.currentStep = plan.length;
+    saveWorkflowState(repoPath, workflowState);
     appendTaskHistory(repoPath, {
       task,
       branch,
@@ -916,6 +1003,9 @@ async function main() {
     return;
   }
 
+  workflowState.status = 'completed';
+  workflowState.currentStep = plan.length;
+  saveWorkflowState(repoPath, workflowState);
   appendTaskHistory(repoPath, {
     task,
     branch: result.branch,
