@@ -17,6 +17,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
 const { execSync } = require('child_process');
 
 const MIN_TREE_FILES = 20;
@@ -24,6 +26,8 @@ const MAX_TREE_FILES = 50;
 const MAX_SELECTED_FILES = 12;
 const MAX_FILE_BYTES = 80_000;
 const MAX_PATCH_CHANGED_LINES = 200;
+const DEFAULT_MAX_CHANGED_FILES = 5;
+const TASK_HISTORY_FILE = '.agent.task-history.json';
 
 const DEFAULT_MODEL_CONFIG = {
   provider: 'openai',
@@ -46,6 +50,64 @@ function run(cmd, cwd) {
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
   }).trim();
+}
+
+function hashFile(filePath) {
+  const data = fs.readFileSync(filePath);
+  return crypto.createHash('sha256').update(data).digest('hex');
+}
+
+function parseArgs(argv) {
+  const positionals = [];
+  const opts = {
+    dryRun: false,
+    requireConfirm: false,
+    confirmed: false,
+    overrideMaxFiles: false,
+    maxFilesChanged: DEFAULT_MAX_CHANGED_FILES,
+  };
+
+  for (let i = 2; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--dry-run') {
+      opts.dryRun = true;
+    } else if (arg === '--confirm') {
+      opts.requireConfirm = true;
+    } else if (arg === '--yes') {
+      opts.confirmed = true;
+    } else if (arg === '--override-max-files') {
+      opts.overrideMaxFiles = true;
+    } else if (arg.startsWith('--max-files=')) {
+      opts.maxFilesChanged = Number(arg.split('=')[1]);
+    } else if (arg === '--max-files') {
+      opts.maxFilesChanged = Number(argv[i + 1]);
+      i += 1;
+    } else {
+      positionals.push(arg);
+    }
+  }
+
+  if (!Number.isInteger(opts.maxFilesChanged) || opts.maxFilesChanged < 1) {
+    throw new Error(`Invalid --max-files value: ${opts.maxFilesChanged}`);
+  }
+
+  return { positionals, opts };
+}
+
+function appendTaskHistory(repoPath, entry) {
+  const historyPath = path.join(repoPath, TASK_HISTORY_FILE);
+  let history = [];
+  if (fs.existsSync(historyPath)) {
+    try {
+      history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+      if (!Array.isArray(history)) history = [];
+    } catch {
+      history = [];
+    }
+  }
+
+  history.push({ timestamp: new Date().toISOString(), ...entry });
+  fs.writeFileSync(historyPath, JSON.stringify(history, null, 2) + '\n', 'utf8');
 }
 
 function ensureGitRepo(repoPath) {
@@ -387,7 +449,7 @@ function ensureUnifiedPatchForFile(rel, diffText) {
 
 function applyDiffChanges(repoPath, updates, selectedPathsSet, allowCreate, allowLargeDiff) {
   const patchChunks = [];
-  const changedPaths = [];
+  const changedPaths = new Set();
 
   for (const update of updates) {
     const rel = normalizeRelPath(update.path);
@@ -429,7 +491,7 @@ function applyDiffChanges(repoPath, updates, selectedPathsSet, allowCreate, allo
     }
 
     patchChunks.push(patchText.trimEnd());
-    changedPaths.push(rel);
+    changedPaths.add(rel);
   }
 
   if (patchChunks.length === 0) return [];
@@ -438,18 +500,70 @@ function applyDiffChanges(repoPath, updates, selectedPathsSet, allowCreate, allo
   console.log('Diff preview (before apply):');
   console.log(combinedPatch);
 
-  const tmpPatch = path.join(repoPath, '.agent.generated.patch');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-patch-'));
+  const tmpPatch = path.join(tempDir, 'generated.patch');
   fs.writeFileSync(tmpPatch, combinedPatch, 'utf8');
-  try {
-    run(`git apply --check --whitespace=nowarn '${tmpPatch}'`, repoPath);
-    run(`git apply --whitespace=nowarn '${tmpPatch}'`, repoPath);
-  } finally {
-    if (fs.existsSync(tmpPatch)) {
-      fs.unlinkSync(tmpPatch);
+
+  const changedPathsList = Array.from(changedPaths);
+  const beforeHashes = {};
+  const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-backup-'));
+  const createdFiles = [];
+
+  for (const rel of changedPathsList) {
+    const full = path.join(repoPath, rel);
+    if (fs.existsSync(full)) {
+      const backupPath = path.join(backupDir, rel);
+      fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+      fs.copyFileSync(full, backupPath);
+      beforeHashes[rel] = hashFile(full);
+    } else {
+      beforeHashes[rel] = null;
+      createdFiles.push(rel);
     }
   }
 
-  return changedPaths;
+  console.log('File hashes before apply:');
+  for (const rel of changedPathsList) {
+    console.log(` - ${rel}: ${beforeHashes[rel] || '(new file)'}`);
+  }
+
+  let applySucceeded = false;
+  try {
+    run(`git apply --check --whitespace=nowarn '${tmpPatch}'`, repoPath);
+    run(`git apply --whitespace=nowarn '${tmpPatch}'`, repoPath);
+    applySucceeded = true;
+  } catch (err) {
+    for (const rel of changedPathsList) {
+      const full = path.join(repoPath, rel);
+      const backupPath = path.join(backupDir, rel);
+      if (fs.existsSync(backupPath)) {
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.copyFileSync(backupPath, full);
+      } else if (createdFiles.includes(rel) && fs.existsSync(full)) {
+        fs.unlinkSync(full);
+      }
+    }
+    console.error('Patch apply failed. Rolled back files from backup.');
+    throw err;
+  } finally {
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+    if (fs.existsSync(backupDir)) {
+      fs.rmSync(backupDir, { recursive: true, force: true });
+    }
+  }
+
+  if (applySucceeded) {
+    console.log('File hashes after apply:');
+    for (const rel of changedPathsList) {
+      const full = path.join(repoPath, rel);
+      const after = fs.existsSync(full) ? hashFile(full) : '(deleted)';
+      console.log(` - ${rel}: ${after}`);
+    }
+  }
+
+  return changedPathsList;
 }
 
 function ensureNotProtectedBranch(repoPath) {
@@ -485,11 +599,14 @@ function commitAndPush(repoPath, commitMessage) {
 }
 
 async function main() {
-  const task = process.argv[2];
-  const repoInput = process.argv[3];
+  const { positionals, opts } = parseArgs(process.argv);
+  const task = positionals[0];
+  const repoInput = positionals[1];
 
   if (!task || !repoInput) {
-    console.error('Usage: node agent.js "<task>" <repo-path>');
+    console.error(
+      'Usage: node agent.js [--dry-run] [--confirm --yes] [--max-files N] [--override-max-files] "<task>" <repo-path>',
+    );
     process.exit(1);
   }
 
@@ -501,20 +618,55 @@ async function main() {
   const selectedFiles = selectRelevantFiles(repoPath, scored);
   const selectedPathsSet = new Set(selectedFiles.map((f) => f.path));
 
+  let branch = null;
   const modelOut = await generatePatch(task, { treeSample, selectedFiles }, modelConfig);
 
-  const branch = checkoutTaskBranch(repoPath, task, modelOut.branch);
+  if (!opts.overrideMaxFiles && modelOut.files.length > opts.maxFilesChanged) {
+    throw new Error(
+      `Patch touches ${modelOut.files.length} files, exceeding max ${opts.maxFilesChanged}. Use --override-max-files to allow.`,
+    );
+  }
+
+  branch = checkoutTaskBranch(repoPath, task, modelOut.branch);
   const allowCreate = taskAllowsCreatingFiles(task);
   const allowLargeDiff = taskAllowsLargeDiff(task);
-  const changedPaths = applyDiffChanges(
-    repoPath,
-    modelOut.files,
-    selectedPathsSet,
-    allowCreate,
-    allowLargeDiff,
-  );
+  const patchChunks = modelOut.files.map((f) => ensureUnifiedPatchForFile(normalizeRelPath(f.path), f.diff).trimEnd());
+  const patchPreview = patchChunks.length ? `${patchChunks.join('\n\n')}\n` : '';
+
+  if (opts.dryRun) {
+    console.log('Dry-run mode enabled. Diff preview (no apply):');
+    console.log(patchPreview);
+    appendTaskHistory(repoPath, {
+      task,
+      branch,
+      status: 'dry_run',
+      files: modelOut.files.map((f) => f.path),
+    });
+    return;
+  }
+
+  if (opts.requireConfirm && !opts.confirmed) {
+    console.log('Confirmation required. Re-run with --confirm --yes to apply changes.');
+    console.log('Diff preview (not applied):');
+    console.log(patchPreview);
+    appendTaskHistory(repoPath, {
+      task,
+      branch,
+      status: 'awaiting_confirmation',
+      files: modelOut.files.map((f) => f.path),
+    });
+    return;
+  }
+
+  const changedPaths = applyDiffChanges(repoPath, modelOut.files, selectedPathsSet, allowCreate, allowLargeDiff);
 
   if (changedPaths.length === 0) {
+    appendTaskHistory(repoPath, {
+      task,
+      branch,
+      status: 'no_changes',
+      files: [],
+    });
     console.log(
       JSON.stringify(
         {
@@ -536,6 +688,12 @@ async function main() {
 
   const result = commitAndPush(repoPath, modelOut.commitMessage);
   if (!result) {
+    appendTaskHistory(repoPath, {
+      task,
+      branch,
+      status: 'no_staged_changes',
+      files: [],
+    });
     console.log(
       JSON.stringify(
         {
@@ -550,6 +708,13 @@ async function main() {
     return;
   }
 
+  appendTaskHistory(repoPath, {
+    task,
+    branch: result.branch,
+    status: 'committed',
+    files: result.files,
+    commit_message: result.commit_message,
+  });
   console.log(JSON.stringify(result, null, 2));
 }
 
