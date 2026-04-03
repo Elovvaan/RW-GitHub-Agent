@@ -312,8 +312,29 @@ async function runDeployFlow(repoPath, wf) {
   while (wf.deploy_attempts < DEPLOY_MAX_REPAIR_ATTEMPTS) {
     wf.deploy_attempts += 1;
     const attempt = wf.deploy_attempts;
-    const trigger = deployTrigger(repoPath, project, service, branch);
-    const deploymentId = trigger.deployment_id || trigger.id || null;
+    let trigger = null;
+    let deploymentId = null;
+    try {
+      trigger = deployTrigger(repoPath, project, service, branch);
+      deploymentId = trigger.deployment_id || trigger.id || null;
+    } catch (err) {
+      const failureResult = {
+        step: 'deploy',
+        attempt,
+        status: 'failed',
+        deployment_id: null,
+        failure_type: classifyDeployFailure('trigger failed', err.message),
+        status_payload: { error: err.message },
+        logs: err.message,
+      };
+      wf.step_results.push(failureResult);
+      wf.history.push({
+        timestamp: new Date().toISOString(),
+        ...failureResult,
+      });
+      if (attempt >= DEPLOY_MAX_REPAIR_ATTEMPTS) break;
+      continue;
+    }
     const startedAt = Date.now();
     let finalStatus = 'timeout';
     let lastStatusPayload = null;
@@ -350,8 +371,13 @@ async function runDeployFlow(repoPath, wf) {
       return { success: true, attempts: attempt, deployment_id: deploymentId };
     }
 
-    const logsPayload = deployLogs(repoPath, deploymentId);
-    const logsText = logsPayload.logs || logsPayload.raw || JSON.stringify(logsPayload);
+    let logsText = '';
+    try {
+      const logsPayload = deployLogs(repoPath, deploymentId);
+      logsText = logsPayload.logs || logsPayload.raw || JSON.stringify(logsPayload);
+    } catch (err) {
+      logsText = `Failed to fetch deploy logs: ${err.message}`;
+    }
     const failureType = classifyDeployFailure(JSON.stringify(lastStatusPayload || {}), String(logsText || ''));
     const failureResult = {
       step: 'deploy',
