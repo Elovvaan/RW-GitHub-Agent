@@ -7,22 +7,38 @@
  *   node agent.js "<plain english task>" /absolute/or/relative/path/to/repo
  *
  * Environment variables:
- *   OPENAI_API_KEY   required
- *   OPENAI_MODEL     optional (default: gpt-5)
- *   OPENAI_BASE_URL  optional (default: https://api.openai.com/v1)
+ *   AGENT_MODEL_CONFIG_JSON optional JSON blob with provider + model settings
+ *   AGENT_MODEL_CONFIG_PATH optional path to JSON config file
+ *   AGENT_MODEL_PROVIDER    optional provider name override
+ *
+ * This script keeps the output JSON schema fixed to:
+ *   { files, branch, commit_message }
  */
 
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-5';
-const DEFAULT_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const MIN_TREE_FILES = 20;
 const MAX_TREE_FILES = 50;
 const MAX_SELECTED_FILES = 12;
 const MAX_FILE_BYTES = 80_000;
 const MAX_PATCH_CHANGED_LINES = 200;
+
+const DEFAULT_MODEL_CONFIG = {
+  provider: 'openai',
+  model: {
+    name: 'gpt-5',
+    apiKeyEnv: 'OPENAI_API_KEY',
+    baseUrl: 'https://api.openai.com/v1',
+    baseUrlEnv: 'OPENAI_BASE_URL',
+    modelEnv: 'OPENAI_MODEL',
+    capabilities: {
+      jsonOutput: true,
+      chatCompletions: true,
+    },
+  },
+};
 
 function run(cmd, cwd) {
   return execSync(cmd, {
@@ -153,27 +169,79 @@ function buildPrompt(task, treeSample, selectedFiles) {
   ].join('\n');
 }
 
-async function callModel(prompt) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error('Missing OPENAI_API_KEY in environment.');
+function readJsonFile(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  return JSON.parse(raw);
+}
+
+function mergeModelConfig(base, override) {
+  const merged = {
+    ...base,
+    ...(override || {}),
+    model: {
+      ...base.model,
+      ...((override && override.model) || {}),
+      capabilities: {
+        ...base.model.capabilities,
+        ...((override && override.model && override.model.capabilities) || {}),
+      },
+    },
+  };
+
+  if (process.env.AGENT_MODEL_PROVIDER) {
+    merged.provider = process.env.AGENT_MODEL_PROVIDER;
+  }
+  if (merged.model.modelEnv && process.env[merged.model.modelEnv]) {
+    merged.model.name = process.env[merged.model.modelEnv];
+  }
+  if (merged.model.baseUrlEnv && process.env[merged.model.baseUrlEnv]) {
+    merged.model.baseUrl = process.env[merged.model.baseUrlEnv];
   }
 
-  const response = await fetch(`${DEFAULT_BASE_URL}/chat/completions`, {
+  return merged;
+}
+
+function loadModelConfig() {
+  let override = null;
+
+  if (process.env.AGENT_MODEL_CONFIG_JSON) {
+    override = JSON.parse(process.env.AGENT_MODEL_CONFIG_JSON);
+  } else if (process.env.AGENT_MODEL_CONFIG_PATH) {
+    const configPath = path.resolve(process.env.AGENT_MODEL_CONFIG_PATH);
+    override = readJsonFile(configPath);
+  }
+
+  return mergeModelConfig(DEFAULT_MODEL_CONFIG, override);
+}
+
+async function openAIChatCompletionsAdapter(prompt, modelConfig) {
+  const apiKeyEnv = modelConfig.model.apiKeyEnv;
+  const apiKey = process.env[apiKeyEnv];
+  if (!apiKey) {
+    throw new Error(`Missing ${apiKeyEnv} in environment.`);
+  }
+
+  const endpoint = `${modelConfig.model.baseUrl.replace(/\/$/, '')}/chat/completions`;
+  const payload = {
+    model: modelConfig.model.name,
+    temperature: 0,
+    messages: [
+      { role: 'system', content: 'You output strict JSON only.' },
+      { role: 'user', content: prompt },
+    ],
+  };
+
+  if (modelConfig.model.capabilities.jsonOutput) {
+    payload.response_format = { type: 'json_object' };
+  }
+
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model: DEFAULT_MODEL,
-      temperature: 0,
-      messages: [
-        { role: 'system', content: 'You output strict JSON only.' },
-        { role: 'user', content: prompt },
-      ],
-      response_format: { type: 'json_object' },
-    }),
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
@@ -187,13 +255,15 @@ async function callModel(prompt) {
     throw new Error('Model response missing choices[0].message.content');
   }
 
-  let parsed;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    throw new Error(`Model returned non-JSON content: ${content}`);
-  }
+  return content;
+}
 
+const MODEL_ADAPTERS = {
+  openai: openAIChatCompletionsAdapter,
+  openai_compatible: openAIChatCompletionsAdapter,
+};
+
+function normalizePatchResponse(parsed) {
   if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.files)) {
     throw new Error('Invalid model JSON shape. Expected object with files array.');
   }
@@ -211,6 +281,28 @@ async function callModel(prompt) {
     .map((f) => ({ path: f.path.trim(), diff: f.diff }));
 
   return { branch, commitMessage, files };
+}
+
+async function generatePatch(task, files, modelConfig) {
+  const prompt = buildPrompt(task, files.treeSample, files.selectedFiles);
+  const providerKey = String(modelConfig.provider || '').toLowerCase();
+  const adapter = MODEL_ADAPTERS[providerKey];
+
+  if (!adapter) {
+    const providers = Object.keys(MODEL_ADAPTERS).join(', ');
+    throw new Error(`Unsupported provider "${modelConfig.provider}". Supported providers: ${providers}`);
+  }
+
+  const rawContent = await adapter(prompt, modelConfig);
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawContent);
+  } catch {
+    throw new Error(`Model returned non-JSON content: ${rawContent}`);
+  }
+
+  return normalizePatchResponse(parsed);
 }
 
 function sanitizeBranchName(task) {
@@ -404,12 +496,12 @@ async function main() {
   const repoPath = path.resolve(repoInput);
   ensureGitRepo(repoPath);
 
+  const modelConfig = loadModelConfig();
   const { scored, treeSample } = collectRepoTree(repoPath, task);
-  const selected = selectRelevantFiles(repoPath, scored);
-  const selectedPathsSet = new Set(selected.map((f) => f.path));
+  const selectedFiles = selectRelevantFiles(repoPath, scored);
+  const selectedPathsSet = new Set(selectedFiles.map((f) => f.path));
 
-  const prompt = buildPrompt(task, treeSample, selected);
-  const modelOut = await callModel(prompt);
+  const modelOut = await generatePatch(task, { treeSample, selectedFiles }, modelConfig);
 
   const branch = checkoutTaskBranch(repoPath, task, modelOut.branch);
   const allowCreate = taskAllowsCreatingFiles(task);
