@@ -2,7 +2,9 @@
 
 const http = require('http');
 const path = require('path');
-const { execFile } = require('child_process');
+const net = require('net');
+const { URL } = require('url');
+const { execFile, spawn } = require('child_process');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = '0.0.0.0';
@@ -10,8 +12,17 @@ const MAX_BODY_BYTES = 8 * 1024;
 const AGENT_PATH = path.resolve(__dirname, 'agent.js');
 const REPO_PATH = path.resolve(process.env.REPO_PATH || process.cwd());
 const DEPLOYMENT_LOG_LIMIT = 400;
+const DEPLOY_PORT_START = Number(process.env.DEPLOY_PORT_START || 4100);
+const DEPLOY_PORT_END = Number(process.env.DEPLOY_PORT_END || 4999);
+const CONTAINER_INTERNAL_PORT = Number(process.env.CONTAINER_INTERNAL_PORT || 3000);
+const HEALTHCHECK_PATH = process.env.HEALTHCHECK_PATH || '/health';
+const HEALTHCHECK_ATTEMPTS = Number(process.env.HEALTHCHECK_ATTEMPTS || 15);
+const HEALTHCHECK_INTERVAL_MS = Number(process.env.HEALTHCHECK_INTERVAL_MS || 2000);
+const HEALTHCHECK_TIMEOUT_MS = Number(process.env.HEALTHCHECK_TIMEOUT_MS || 1500);
+const DOCKER_LOG_TAIL = Number(process.env.DOCKER_LOG_TAIL || 250);
 
 const deployments = [];
+const servicePortMap = new Map();
 let deploymentCounter = 1;
 
 function nowIso() {
@@ -22,6 +33,14 @@ function makeDeploymentId() {
   const id = String(deploymentCounter).padStart(4, '0');
   deploymentCounter += 1;
   return `dep_${id}`;
+}
+
+function sanitizeName(input) {
+  return String(input || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '') || 'service';
 }
 
 function writeDeploymentLog(deployment, line) {
@@ -35,53 +54,6 @@ function writeDeploymentLog(deployment, line) {
 function setDeploymentStatus(deployment, status) {
   deployment.status = status;
   deployment.updatedAt = nowIso();
-}
-
-function fakePublicUrl(service, id) {
-  const safeService = String(service || 'service')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '') || 'service';
-  return `https://${safeService}-${id}.example-deploy.app`;
-}
-
-function maybeFailDeployment(deployment) {
-  const failureFromBranch = /fail|broken|error/i.test(deployment.branch);
-  const randomFailure = Math.random() < 0.2;
-  return failureFromBranch || randomFailure;
-}
-
-function startDeploymentFlow(deployment) {
-  writeDeploymentLog(deployment, `Deployment queued for ${deployment.project}/${deployment.service}.`);
-
-  setTimeout(() => {
-    setDeploymentStatus(deployment, 'building');
-    writeDeploymentLog(deployment, `Starting build for branch ${deployment.branch} at ${deployment.commitSha}.`);
-  }, 500);
-
-  setTimeout(() => {
-    const shouldFail = maybeFailDeployment(deployment);
-    if (shouldFail) {
-      setDeploymentStatus(deployment, 'failed');
-      deployment.errorSummary = 'Build failed: simulated compilation error.';
-      writeDeploymentLog(deployment, 'ERROR: Type check failed in src/main.ts (simulated).');
-      writeDeploymentLog(deployment, `Deployment ${deployment.id} marked as failed.`);
-      return;
-    }
-
-    setDeploymentStatus(deployment, 'deploying');
-    writeDeploymentLog(deployment, 'Build completed. Uploading artifacts and provisioning runtime.');
-  }, 1700);
-
-  setTimeout(() => {
-    if (deployment.status !== 'deploying') {
-      return;
-    }
-    setDeploymentStatus(deployment, 'success');
-    deployment.url = fakePublicUrl(deployment.service, deployment.id);
-    writeDeploymentLog(deployment, `Health check passed. Deployment available at ${deployment.url}`);
-  }, 3200);
 }
 
 function sendJson(res, code, payload) {
@@ -131,6 +103,265 @@ function runTask(task) {
   });
 }
 
+function runCommand(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { cwd: options.cwd || REPO_PATH, maxBuffer: 20 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        const err = new Error((stderr || stdout || error.message || 'command_failed').trim());
+        err.stdout = String(stdout || '');
+        err.stderr = String(stderr || '');
+        err.command = [command, ...args].join(' ');
+        reject(err);
+        return;
+      }
+      resolve({ stdout: String(stdout || ''), stderr: String(stderr || ''), command: [command, ...args].join(' ') });
+    });
+  });
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function checkPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', () => resolve(false));
+    server.listen({ port, host: '0.0.0.0' }, () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+async function assignServicePort(serviceName) {
+  const existing = servicePortMap.get(serviceName);
+  if (existing && await checkPortAvailable(existing)) {
+    return existing;
+  }
+
+  for (let port = DEPLOY_PORT_START; port <= DEPLOY_PORT_END; port += 1) {
+    if (!await checkPortAvailable(port)) continue;
+    servicePortMap.set(serviceName, port);
+    return port;
+  }
+  throw new Error(`No available deployment ports in range ${DEPLOY_PORT_START}-${DEPLOY_PORT_END}`);
+}
+
+function httpPing(port, route) {
+  return new Promise((resolve) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: route,
+      method: 'GET',
+      timeout: HEALTHCHECK_TIMEOUT_MS,
+    }, (response) => {
+      response.resume();
+      resolve(response.statusCode >= 200 && response.statusCode < 400);
+    });
+
+    request.on('error', () => resolve(false));
+    request.on('timeout', () => {
+      request.destroy();
+      resolve(false);
+    });
+    request.end();
+  });
+}
+
+async function captureDockerLogs(deployment, tail = DOCKER_LOG_TAIL) {
+  if (!deployment.containerId) return;
+  try {
+    const out = await runCommand('docker', ['logs', '--tail', String(tail), deployment.containerId]);
+    const text = out.stdout || out.stderr || '';
+    if (!text.trim()) {
+      writeDeploymentLog(deployment, 'docker logs: (no output)');
+      return;
+    }
+    const lines = text.trimEnd().split('\n');
+    for (const line of lines) {
+      writeDeploymentLog(deployment, `[docker] ${line}`);
+    }
+  } catch (err) {
+    writeDeploymentLog(deployment, `Unable to fetch docker logs: ${err.message}`);
+  }
+}
+
+function monitorContainerLifecycle(deployment) {
+  if (!deployment.containerId) return;
+
+  runCommand('docker', ['wait', deployment.containerId])
+    .then(async (result) => {
+      const exitCode = Number(String(result.stdout || '').trim() || '1');
+      deployment.lastExitCode = exitCode;
+      if (deployment.status === 'success' || deployment.status === 'running' || deployment.status === 'health_check') {
+        setDeploymentStatus(deployment, 'failed');
+        deployment.errorSummary = `Container exited after deployment with code ${exitCode}.`;
+        writeDeploymentLog(deployment, deployment.errorSummary);
+        await captureDockerLogs(deployment);
+      }
+    })
+    .catch((err) => {
+      writeDeploymentLog(deployment, `Container monitor error: ${err.message}`);
+    });
+}
+
+async function pullRepoForDeployment(deployment) {
+  const commands = [
+    ['git', ['-C', REPO_PATH, 'fetch', '--all', '--prune']],
+    ['git', ['-C', REPO_PATH, 'checkout', deployment.branch]],
+    ['git', ['-C', REPO_PATH, 'pull', '--ff-only', 'origin', deployment.branch]],
+    ['git', ['-C', REPO_PATH, 'rev-parse', '--verify', deployment.commitSha]],
+  ];
+
+  for (const [cmd, args] of commands) {
+    deployment.commands.push([cmd, ...args].join(' '));
+    const out = await runCommand(cmd, args, { cwd: REPO_PATH });
+    const output = `${out.stdout}${out.stderr}`.trim();
+    if (output) {
+      writeDeploymentLog(deployment, output.split('\n')[0]);
+    }
+  }
+}
+
+async function startDockerDeployment(deployment) {
+  const safeProject = sanitizeName(deployment.project);
+  const safeService = sanitizeName(deployment.service);
+  const imageTag = `${safeProject}-${safeService}-${deployment.commitSha.slice(0, 12)}`;
+  const containerName = `${safeProject}-${safeService}`;
+
+  deployment.imageTag = imageTag;
+  deployment.containerName = containerName;
+
+  setDeploymentStatus(deployment, 'building');
+  writeDeploymentLog(deployment, `Preparing deployment for ${deployment.project}/${deployment.service}.`);
+
+  await pullRepoForDeployment(deployment);
+
+  const assignedPort = await assignServicePort(containerName);
+  deployment.assignedPort = assignedPort;
+
+  const buildArgs = ['build', '-f', 'Dockerfile', '-t', imageTag, REPO_PATH];
+  deployment.commands.push(`docker ${buildArgs.join(' ')}`);
+  await runCommand('docker', buildArgs, { cwd: REPO_PATH });
+  writeDeploymentLog(deployment, `Built Docker image ${imageTag}.`);
+
+  const existingArgs = ['ps', '-aq', '--filter', `name=^/${containerName}$`];
+  deployment.commands.push(`docker ${existingArgs.join(' ')}`);
+  const existing = (await runCommand('docker', existingArgs)).stdout.trim();
+  if (existing) {
+    const removeArgs = ['rm', '-f', containerName];
+    deployment.commands.push(`docker ${removeArgs.join(' ')}`);
+    await runCommand('docker', removeArgs);
+    writeDeploymentLog(deployment, `Stopped existing container ${containerName}.`);
+  }
+
+  const runArgs = [
+    'run', '-d',
+    '--name', containerName,
+    '-p', `${assignedPort}:${CONTAINER_INTERNAL_PORT}`,
+    '--label', `deployment_id=${deployment.id}`,
+    imageTag,
+  ];
+  deployment.commands.push(`docker ${runArgs.join(' ')}`);
+  const runResult = await runCommand('docker', runArgs);
+  deployment.containerId = runResult.stdout.trim();
+
+  setDeploymentStatus(deployment, 'health_check');
+  writeDeploymentLog(deployment, `Container started (${deployment.containerId}) on port ${assignedPort}.`);
+
+  deployment.testCommands = [
+    `curl -fsS http://127.0.0.1:${assignedPort}${HEALTHCHECK_PATH}`,
+    `docker ps --filter name=^/${containerName}$`,
+    `docker logs --tail 100 ${deployment.containerId}`,
+  ];
+
+  let healthy = false;
+  for (let attempt = 1; attempt <= HEALTHCHECK_ATTEMPTS; attempt += 1) {
+    const isHealthy = await httpPing(assignedPort, HEALTHCHECK_PATH);
+    writeDeploymentLog(deployment, `Health check attempt ${attempt}/${HEALTHCHECK_ATTEMPTS}: ${isHealthy ? 'ok' : 'not ready'}.`);
+    if (isHealthy) {
+      healthy = true;
+      break;
+    }
+
+    try {
+      const inspectArgs = ['inspect', '-f', '{{.State.Running}}', deployment.containerId];
+      deployment.commands.push(`docker ${inspectArgs.join(' ')}`);
+      const inspect = await runCommand('docker', inspectArgs);
+      if (inspect.stdout.trim() !== 'true') {
+        deployment.errorSummary = 'Container exited before becoming healthy.';
+        writeDeploymentLog(deployment, deployment.errorSummary);
+        break;
+      }
+    } catch (err) {
+      deployment.errorSummary = `Unable to inspect container state: ${err.message}`;
+      writeDeploymentLog(deployment, deployment.errorSummary);
+      break;
+    }
+
+    await delay(HEALTHCHECK_INTERVAL_MS);
+  }
+
+  if (!healthy) {
+    setDeploymentStatus(deployment, 'failed');
+    deployment.errorSummary = deployment.errorSummary || `Health check failed for http://127.0.0.1:${assignedPort}${HEALTHCHECK_PATH}`;
+    await captureDockerLogs(deployment);
+    throw new Error(deployment.errorSummary);
+  }
+
+  setDeploymentStatus(deployment, 'success');
+  deployment.url = `http://127.0.0.1:${assignedPort}`;
+  writeDeploymentLog(deployment, `Deployment successful at ${deployment.url}.`);
+
+  monitorContainerLifecycle(deployment);
+}
+
+function startDeploymentFlow(deployment) {
+  writeDeploymentLog(deployment, `Deployment queued for ${deployment.project}/${deployment.service}.`);
+
+  startDockerDeployment(deployment)
+    .catch(async (err) => {
+      setDeploymentStatus(deployment, 'failed');
+      deployment.errorSummary = deployment.errorSummary || err.message || 'Deployment failed.';
+      writeDeploymentLog(deployment, `Deployment failed: ${deployment.errorSummary}`);
+      await captureDockerLogs(deployment);
+    });
+}
+
+function streamDockerLogs(req, res, deployment) {
+  if (!deployment.containerId) {
+    sendText(res, 404, 'container_not_found\n');
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+
+  const parsed = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const follow = parsed.searchParams.get('follow') !== 'false';
+  const args = ['logs', '--timestamps', '--tail', '200'];
+  if (follow) args.push('-f');
+  args.push(deployment.containerId);
+
+  const child = spawn('docker', args, { cwd: REPO_PATH });
+
+  child.stdout.on('data', (chunk) => res.write(chunk));
+  child.stderr.on('data', (chunk) => res.write(chunk));
+
+  child.on('close', () => {
+    if (!res.writableEnded) res.end();
+  });
+
+  req.on('close', () => {
+    child.kill('SIGTERM');
+  });
+}
+
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     sendJson(res, 200, { ok: true });
@@ -148,11 +379,16 @@ const server = http.createServer((req, res) => {
       url: latest.url,
       deploymentId: latest.id,
       errorSummary: latest.errorSummary,
+      imageTag: latest.imageTag,
+      containerId: latest.containerId,
+      assignedPort: latest.assignedPort,
+      commands: latest.commands,
+      testCommands: latest.testCommands,
     });
     return;
   }
 
-  if (req.method === 'GET' && req.url.startsWith('/deployments/') && req.url.endsWith('/logs')) {
+  if (req.method === 'GET' && req.url.startsWith('/deployments/') && req.url.includes('/logs')) {
     const parts = req.url.split('/');
     const deploymentId = parts[2];
     const deployment = deployments.find((item) => item.id === deploymentId);
@@ -160,7 +396,7 @@ const server = http.createServer((req, res) => {
       sendText(res, 404, 'deployment_not_found\n');
       return;
     }
-    sendText(res, 200, `${deployment.logs.join('\n')}\n`);
+    streamDockerLogs(req, res, deployment);
     return;
   }
 
@@ -206,7 +442,14 @@ const server = http.createServer((req, res) => {
         status: 'queued',
         url: null,
         errorSummary: null,
+        imageTag: null,
+        containerName: null,
+        containerId: null,
+        assignedPort: null,
         logs: [],
+        commands: [],
+        testCommands: [],
+        lastExitCode: null,
         createdAt: nowIso(),
         updatedAt: nowIso(),
       };
@@ -217,6 +460,7 @@ const server = http.createServer((req, res) => {
       sendJson(res, 202, {
         deploymentId: deployment.id,
         status: deployment.status,
+        assignedPort: deployment.assignedPort,
       });
     });
 
