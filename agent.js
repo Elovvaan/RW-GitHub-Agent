@@ -9,6 +9,9 @@ const { spawnSync } = require('child_process');
 const STATE_FILE = '.agent-workflow-state.json';
 const MAX_FILE_BYTES = 150_000;
 const MAX_SELECTED_FILES = 12;
+const DEPLOY_MAX_REPAIR_ATTEMPTS = 3;
+const DEPLOY_POLL_INTERVAL_MS = Number(process.env.DEPLOY_POLL_INTERVAL_MS || 10_000);
+const DEPLOY_POLL_TIMEOUT_MS = Number(process.env.DEPLOY_POLL_TIMEOUT_MS || 10 * 60 * 1000);
 
 const TOOL_REGISTRY = {
   read_repo: { name: 'read_repo', description: 'Read repository files and metadata.', risk: 'allow' },
@@ -16,6 +19,10 @@ const TOOL_REGISTRY = {
   apply_patch: { name: 'apply_patch', description: 'Apply unified diff patches to files.', risk: 'confirm' },
   git_commit: { name: 'git_commit', description: 'Create git commit.', risk: 'confirm' },
   git_push: { name: 'git_push', description: 'Push branch to remote.', risk: 'confirm' },
+  'deploy.trigger': { name: 'deploy.trigger', description: 'Trigger a deployment.', risk: 'confirm' },
+  'deploy.status': { name: 'deploy.status', description: 'Check deployment status.', risk: 'allow' },
+  'deploy.logs': { name: 'deploy.logs', description: 'Fetch deployment logs.', risk: 'allow' },
+  'deploy.rollback': { name: 'deploy.rollback', description: 'Rollback deployment.', risk: 'confirm' },
 };
 
 function shell(cmd, cwd, opts = {}) {
@@ -37,6 +44,10 @@ function safeJsonParse(text, fallback = null) {
   } catch {
     return fallback;
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseArgs(argv) {
@@ -252,6 +263,138 @@ function commitAndPush(repoPath, commitMessage, branch) {
   return true;
 }
 
+function classifyDeployFailure(statusText, logsText = '') {
+  const text = `${statusText || ''}\n${logsText || ''}`.toLowerCase();
+  if (/(compile|build|webpack|tsc|syntax error|dependency|npm err)/.test(text)) return 'build';
+  if (/(runtime|exception|panic|segmentation fault|crash|oom|out of memory)/.test(text)) return 'runtime';
+  if (/(health.?check|readiness|liveness|probe|unhealthy|503)/.test(text)) return 'healthcheck';
+  if (/(config|environment variable|secret|permission denied|invalid value|misconfig)/.test(text)) return 'config';
+  return 'unknown';
+}
+
+function runDeployTool(repoPath, toolName, payload = {}) {
+  requireToolPermission(toolName, currentFlags);
+  const envName = `DEPLOY_${toolName.toUpperCase().replace(/[.\-]/g, '_')}_CMD`;
+  const cmd = process.env[envName];
+  if (!cmd) {
+    throw new Error(`Missing deploy tool command: ${envName}`);
+  }
+  const out = shell(`${cmd} ${JSON.stringify(JSON.stringify(payload))}`, repoPath);
+  const parsed = safeJsonParse(out, null);
+  if (parsed) return parsed;
+  return { raw: out };
+}
+
+function deployTrigger(repoPath, project, service, branch) {
+  return runDeployTool(repoPath, 'deploy.trigger', { project, service, branch });
+}
+
+function deployStatus(repoPath, deploymentId) {
+  return runDeployTool(repoPath, 'deploy.status', { deployment_id: deploymentId });
+}
+
+function deployLogs(repoPath, deploymentId) {
+  return runDeployTool(repoPath, 'deploy.logs', { deployment_id: deploymentId });
+}
+
+function deployRollback(repoPath, deploymentId) {
+  return runDeployTool(repoPath, 'deploy.rollback', { deployment_id: deploymentId });
+}
+
+async function runDeployFlow(repoPath, wf) {
+  const project = process.env.DEPLOY_PROJECT || path.basename(repoPath);
+  const service = process.env.DEPLOY_SERVICE || project;
+  const branch = wf.branch;
+  wf.step_results = wf.step_results || [];
+  wf.history = wf.history || [];
+  wf.deploy_attempts = Number(wf.deploy_attempts || 0);
+
+  while (wf.deploy_attempts < DEPLOY_MAX_REPAIR_ATTEMPTS) {
+    wf.deploy_attempts += 1;
+    const attempt = wf.deploy_attempts;
+    const trigger = deployTrigger(repoPath, project, service, branch);
+    const deploymentId = trigger.deployment_id || trigger.id || null;
+    const startedAt = Date.now();
+    let finalStatus = 'timeout';
+    let lastStatusPayload = null;
+
+    while ((Date.now() - startedAt) < DEPLOY_POLL_TIMEOUT_MS) {
+      const statusPayload = deployStatus(repoPath, deploymentId);
+      lastStatusPayload = statusPayload;
+      const status = String(statusPayload.status || statusPayload.state || '').toLowerCase();
+      if (['success', 'succeeded', 'healthy'].includes(status)) {
+        finalStatus = 'success';
+        break;
+      }
+      if (['failed', 'error', 'crashed', 'cancelled'].includes(status)) {
+        finalStatus = 'failed';
+        break;
+      }
+      await sleep(DEPLOY_POLL_INTERVAL_MS);
+    }
+
+    if (finalStatus === 'success') {
+      wf.step_results.push({
+        step: 'deploy',
+        attempt,
+        status: 'success',
+        deployment_id: deploymentId,
+      });
+      wf.history.push({
+        timestamp: new Date().toISOString(),
+        step: 'deploy',
+        attempt,
+        status: 'success',
+        deployment_id: deploymentId,
+      });
+      return { success: true, attempts: attempt, deployment_id: deploymentId };
+    }
+
+    const logsPayload = deployLogs(repoPath, deploymentId);
+    const logsText = logsPayload.logs || logsPayload.raw || JSON.stringify(logsPayload);
+    const failureType = classifyDeployFailure(JSON.stringify(lastStatusPayload || {}), String(logsText || ''));
+    const failureResult = {
+      step: 'deploy',
+      attempt,
+      status: finalStatus === 'timeout' ? 'timeout' : 'failed',
+      deployment_id: deploymentId,
+      failure_type: failureType,
+      status_payload: lastStatusPayload,
+      logs: logsText,
+    };
+    wf.step_results.push(failureResult);
+    wf.history.push({
+      timestamp: new Date().toISOString(),
+      ...failureResult,
+    });
+
+    if (attempt >= DEPLOY_MAX_REPAIR_ATTEMPTS) {
+      break;
+    }
+
+    try {
+      const rollback = deployRollback(repoPath, deploymentId);
+      wf.history.push({
+        timestamp: new Date().toISOString(),
+        step: 'deploy.rollback',
+        attempt,
+        deployment_id: deploymentId,
+        rollback,
+      });
+    } catch (err) {
+      wf.history.push({
+        timestamp: new Date().toISOString(),
+        step: 'deploy.rollback',
+        attempt,
+        deployment_id: deploymentId,
+        error: err.message,
+      });
+    }
+  }
+
+  return { success: false, attempts: wf.deploy_attempts };
+}
+
 function evaluate() {
   const checks = {
     has_tool_registry: !!TOOL_REGISTRY.apply_patch,
@@ -300,6 +443,9 @@ async function runAgent() {
       branch: null,
       commit_message: null,
       errors: [],
+      history: [],
+      step_results: [],
+      deploy_attempts: 0,
       started_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -369,8 +515,17 @@ async function runAgent() {
   let committed = false;
   if (!args.dryRun && wf.step === 'commit') {
     committed = commitAndPush(repoPath, wf.commit_message, branch);
+    wf.step = committed ? 'deploy' : 'done';
+    wf.status = committed ? 'in_progress' : 'done';
+    wf.updated_at = new Date().toISOString();
+    saveState(repoPath, wf);
+  }
+
+  if (!args.dryRun && wf.step === 'deploy') {
+    const deployResult = await runDeployFlow(repoPath, wf);
+    wf.deploy = deployResult;
     wf.step = 'done';
-    wf.status = 'done';
+    wf.status = deployResult.success ? 'done' : 'failed';
     wf.updated_at = new Date().toISOString();
     saveState(repoPath, wf);
   }
@@ -385,6 +540,8 @@ async function runAgent() {
     selected_files: wf.selectedFiles,
     plan_summary: wf.plan?.summary || null,
     committed,
+    deploy: wf.deploy || null,
+    step_results: wf.step_results || [],
     state_file: path.join(repoPath, STATE_FILE),
   };
 
