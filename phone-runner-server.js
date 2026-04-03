@@ -4,6 +4,7 @@ const http = require('http');
 const path = require('path');
 const { URL } = require('url');
 const { execFile } = require('child_process');
+const Database = require('better-sqlite3');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = '0.0.0.0';
@@ -21,13 +22,163 @@ const DOCKER_LOG_TAIL = Number(process.env.DOCKER_LOG_TAIL || 250);
 const WORKER_URL = String(process.env.WORKER_URL || '').trim().replace(/\/$/, '');
 const WORKER_TOKEN = String(process.env.WORKER_TOKEN || '').trim();
 const WORKER_TIMEOUT_MS = Number(process.env.WORKER_TIMEOUT_MS || 45_000);
+const DEPLOYMENTS_DB_PATH = path.resolve(process.env.DEPLOYMENTS_DB_PATH || path.join(__dirname, 'deployments.sqlite'));
 
-const deployments = [];
+let db;
+const latestDeploymentCache = new Map();
 const servicePortMap = new Map();
 let deploymentCounter = 1;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function safeJsonParse(text, fallback) {
+  try {
+    const parsed = JSON.parse(String(text || ''));
+    return parsed == null ? fallback : parsed;
+  } catch {
+    return fallback;
+  }
+}
+
+function deploymentFromRow(row) {
+  return {
+    id: row.id,
+    project: row.project,
+    service: row.service,
+    status: row.status,
+    imageTag: row.imageTag || null,
+    containerId: row.containerId || null,
+    assignedPort: Number.isFinite(row.assignedPort) ? row.assignedPort : null,
+    logs: safeJsonParse(row.logs, []),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    branch: null,
+    commitSha: null,
+    url: row.assignedPort ? `http://127.0.0.1:${row.assignedPort}` : null,
+    errorSummary: null,
+    containerName: row.project && row.service ? `${sanitizeName(row.project)}-${sanitizeName(row.service)}` : null,
+    domain: buildRouteDomain(row.project, row.service),
+    commands: [],
+    testCommands: [],
+    lastExitCode: null,
+    worker: null,
+  };
+}
+
+function writeDeploymentRow(deployment) {
+  db.prepare(`
+    INSERT INTO deployments (id, project, service, status, imageTag, containerId, assignedPort, logs, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      project = excluded.project,
+      service = excluded.service,
+      status = excluded.status,
+      imageTag = excluded.imageTag,
+      containerId = excluded.containerId,
+      assignedPort = excluded.assignedPort,
+      logs = excluded.logs,
+      updatedAt = excluded.updatedAt
+  `).run(
+    deployment.id,
+    deployment.project,
+    deployment.service,
+    deployment.status,
+    deployment.imageTag,
+    deployment.containerId,
+    deployment.assignedPort,
+    JSON.stringify(deployment.logs || []),
+    deployment.createdAt,
+    deployment.updatedAt,
+  );
+  latestDeploymentCache.set(`${deployment.project}/${deployment.service}`, deploymentFromRow({
+    id: deployment.id,
+    project: deployment.project,
+    service: deployment.service,
+    status: deployment.status,
+    imageTag: deployment.imageTag,
+    containerId: deployment.containerId,
+    assignedPort: deployment.assignedPort,
+    logs: JSON.stringify(deployment.logs || []),
+    createdAt: deployment.createdAt,
+    updatedAt: deployment.updatedAt,
+  }));
+}
+
+function getDeploymentById(deploymentId) {
+  const row = db.prepare(`
+    SELECT id, project, service, status, imageTag, containerId, assignedPort, logs, createdAt, updatedAt
+    FROM deployments
+    WHERE id = ?
+  `).get(deploymentId);
+  return row ? deploymentFromRow(row) : null;
+}
+
+function getLatestDeployment() {
+  const row = db.prepare(`
+    SELECT id, project, service, status, imageTag, containerId, assignedPort, logs, createdAt, updatedAt
+    FROM deployments
+    ORDER BY updatedAt DESC
+    LIMIT 1
+  `).get();
+  return row ? deploymentFromRow(row) : null;
+}
+
+function hydrateInMemoryState() {
+  latestDeploymentCache.clear();
+  servicePortMap.clear();
+  const rows = db.prepare(`
+    SELECT id, project, service, status, imageTag, containerId, assignedPort, logs, createdAt, updatedAt
+    FROM deployments
+    ORDER BY updatedAt DESC
+  `).all();
+  for (const row of rows) {
+    const key = `${row.project}/${row.service}`;
+    if (!latestDeploymentCache.has(key)) {
+      latestDeploymentCache.set(key, deploymentFromRow(row));
+    }
+    if (row.assignedPort) {
+      servicePortMap.set(`${sanitizeName(row.project)}-${sanitizeName(row.service)}`, row.assignedPort);
+    }
+  }
+}
+
+function initDatabase() {
+  db = new Database(DEPLOYMENTS_DB_PATH);
+  db.pragma('journal_mode = WAL');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS deployments (
+      id TEXT PRIMARY KEY,
+      project TEXT NOT NULL,
+      service TEXT NOT NULL,
+      status TEXT NOT NULL,
+      imageTag TEXT,
+      containerId TEXT,
+      assignedPort INTEGER,
+      logs TEXT NOT NULL DEFAULT '[]',
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_deployments_project_service_updated
+    ON deployments(project, service, updatedAt DESC);
+  `);
+
+  const counterRow = db.prepare(`
+    SELECT id
+    FROM deployments
+    WHERE id LIKE 'dep_%'
+    ORDER BY CAST(SUBSTR(id, 5) AS INTEGER) DESC
+    LIMIT 1
+  `).get();
+  if (counterRow?.id) {
+    const parsed = Number(counterRow.id.slice(4));
+    if (Number.isFinite(parsed)) deploymentCounter = parsed + 1;
+  }
+
+  hydrateInMemoryState();
 }
 
 function makeDeploymentId() {
@@ -50,11 +201,13 @@ function writeDeploymentLog(deployment, line) {
     deployment.logs.shift();
   }
   deployment.updatedAt = nowIso();
+  writeDeploymentRow(deployment);
 }
 
 function setDeploymentStatus(deployment, status) {
   deployment.status = status;
   deployment.updatedAt = nowIso();
+  writeDeploymentRow(deployment);
 }
 
 function sendJson(res, code, payload) {
@@ -78,27 +231,18 @@ function extractHostName(hostHeader) {
 }
 
 function collectActiveRoutes() {
-  const latestByRouteKey = new Map();
-
-  for (const deployment of deployments) {
-    if (!deployment.assignedPort) continue;
-    if (deployment.status !== 'success' && deployment.status !== 'health_check' && deployment.status !== 'running') continue;
-    const key = `${sanitizeName(deployment.project)}/${sanitizeName(deployment.service)}`;
-    const current = latestByRouteKey.get(key);
-    if (!current || new Date(deployment.updatedAt).getTime() >= new Date(current.updatedAt).getTime()) {
-      latestByRouteKey.set(key, deployment);
-    }
-  }
-
-  return Array.from(latestByRouteKey.values()).map((deployment) => ({
-    domain: deployment.domain || buildRouteDomain(deployment.project, deployment.service),
-    project: deployment.project,
-    service: deployment.service,
-    port: deployment.assignedPort,
-    deploymentId: deployment.id,
-    status: deployment.status,
-    updatedAt: deployment.updatedAt,
-  }));
+  return Array.from(latestDeploymentCache.values())
+    .filter((deployment) => deployment.assignedPort)
+    .filter((deployment) => deployment.status === 'success' || deployment.status === 'health_check' || deployment.status === 'running')
+    .map((deployment) => ({
+      domain: deployment.domain || buildRouteDomain(deployment.project, deployment.service),
+      project: deployment.project,
+      service: deployment.service,
+      port: deployment.assignedPort,
+      deploymentId: deployment.id,
+      status: deployment.status,
+      updatedAt: deployment.updatedAt,
+    }));
 }
 
 function findRouteByHost(hostHeader) {
@@ -461,7 +605,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === 'GET' && req.url === '/deployments/latest') {
-    const latest = deployments[deployments.length - 1];
+    const latest = getLatestDeployment();
     if (!latest) {
       sendJson(res, 404, { error: 'not_found', message: 'No deployments exist yet.' });
       return;
@@ -485,7 +629,7 @@ const server = http.createServer((req, res) => {
     const parsed = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const parts = parsed.pathname.split('/');
     const deploymentId = parts[2];
-    const deployment = deployments.find((item) => item.id === deploymentId);
+    const deployment = getDeploymentById(deploymentId);
     if (!deployment) {
       sendText(res, 404, 'deployment_not_found\n');
       return;
@@ -535,7 +679,7 @@ const server = http.createServer((req, res) => {
         updatedAt: nowIso(),
       };
 
-      deployments.push(deployment);
+      writeDeploymentRow(deployment);
       startDeploymentFlow(deployment);
 
       sendJson(res, 202, {
@@ -609,6 +753,8 @@ const server = http.createServer((req, res) => {
     sendJson(res, result.success ? 200 : 500, result);
   });
 });
+
+initDatabase();
 
 server.listen(PORT, HOST, () => {
   console.log(`phone-runner-server listening on http://${HOST}:${PORT}`);

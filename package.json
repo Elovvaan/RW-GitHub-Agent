@@ -5,6 +5,9 @@
   "description": "Lean private GitHub coding agent for Replit",
   "main": "phone-runner-server.js",
   "type": "commonjs",
+  "dependencies": {
+    "better-sqlite3": "^11.8.1"
+  },
   "scripts": {
     "start": "node phone-runner-server.js",
     "agent": "node agent.js",
