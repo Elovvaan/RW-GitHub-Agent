@@ -1,0 +1,16 @@
+{
+  "name": "private-github-coding-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lean private GitHub coding agent for Replit",
+  "main": "phone-runner-server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node phone-runner-server.js",
+    "agent": "node agent.js",
+    "eval": "node agent.js --eval"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

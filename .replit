@@ -1,0 +1,10 @@
+run = "npm start"
+language = "nodejs"
+entrypoint = "phone-runner-server.js"
+
+[nix]
+channel = "stable-24_05"
+
+[deployment]
+run = ["npm", "start"]
+deploymentTarget = "cloudrun"

@@ -4,49 +4,47 @@ const http = require('http');
 const path = require('path');
 const { execFile } = require('child_process');
 
-const PORT = Number(process.env.PORT || 8787);
-const HOST = process.env.HOST || '0.0.0.0';
-const AGENT_PATH = path.resolve(process.env.AGENT_PATH || path.join(__dirname, 'agent.js'));
-const REPO_PATH = path.resolve(process.env.AGENT_REPO_PATH || process.cwd());
-const MAX_BODY_BYTES = 64 * 1024;
+const PORT = Number(process.env.PORT || 3000);
+const HOST = '0.0.0.0';
+const MAX_BODY_BYTES = 8 * 1024;
+const AGENT_PATH = path.resolve(__dirname, 'agent.js');
+const REPO_PATH = path.resolve(process.env.REPO_PATH || process.cwd());
 
-function sendJson(res, statusCode, payload) {
-  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
+function sendJson(res, code, payload) {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(payload));
 }
 
-function extractFinalJson(stdoutText) {
-  for (let i = stdoutText.lastIndexOf('{'); i >= 0; i = stdoutText.lastIndexOf('{', i - 1)) {
-    const candidate = stdoutText.slice(i).trim();
-    try {
-      return JSON.parse(candidate);
-    } catch {
-      // continue
-    }
+function extractJson(stdoutText) {
+  const lines = String(stdoutText || '').trim();
+  const idx = lines.lastIndexOf('{');
+  if (idx < 0) return null;
+  try {
+    return JSON.parse(lines.slice(idx));
+  } catch {
+    return null;
   }
-  return null;
 }
 
-function runAgentTask(task) {
+function runTask(task) {
   return new Promise((resolve) => {
-    execFile(process.execPath, [AGENT_PATH, task, REPO_PATH], { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-      const parsed = extractFinalJson(String(stdout || ''));
-
+    const args = [AGENT_PATH, task, REPO_PATH, '--confirm', '--yes'];
+    execFile(process.execPath, args, { cwd: REPO_PATH, maxBuffer: 15 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const parsed = extractJson(stdout);
       if (error) {
         resolve({
           started: true,
           success: false,
-          error: String((stderr || error.message || 'Agent execution failed')).trim(),
+          error: (parsed && parsed.error) || String(stderr || error.message || 'Agent failed').trim(),
           branch: parsed?.branch || null,
           commit_message: parsed?.commit_message || null,
         });
         return;
       }
-
       resolve({
         started: true,
-        success: true,
-        error: null,
+        success: !!parsed?.success,
+        error: parsed?.error || null,
         branch: parsed?.branch || null,
         commit_message: parsed?.commit_message || null,
       });
@@ -54,75 +52,69 @@ function runAgentTask(task) {
   });
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     sendJson(res, 200, { ok: true });
     return;
   }
 
   if (req.method !== 'POST' || req.url !== '/run') {
-    sendJson(res, 404, { error: 'Not found' });
+    sendJson(res, 404, { error: 'not_found' });
     return;
   }
 
-  let body = '';
-  let tooLarge = false;
+  let size = 0;
+  const chunks = [];
 
   req.on('data', (chunk) => {
-    body += chunk;
-    if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
-      tooLarge = true;
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      sendJson(res, 413, {
+        started: false,
+        success: false,
+        error: 'body_too_large',
+        branch: null,
+        commit_message: null,
+      });
       req.destroy();
+      return;
     }
-  });
-
-  req.on('close', async () => {
-    if (!tooLarge) return;
-    sendJson(res, 413, {
-      started: false,
-      success: false,
-      error: 'Request body too large',
-      branch: null,
-      commit_message: null,
-    });
+    chunks.push(chunk);
   });
 
   req.on('end', async () => {
-    if (tooLarge) return;
-
-    let payload;
+    let body;
     try {
-      payload = body ? JSON.parse(body) : {};
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
     } catch {
       sendJson(res, 400, {
         started: false,
         success: false,
-        error: 'Invalid JSON body',
+        error: 'invalid_json',
         branch: null,
         commit_message: null,
       });
       return;
     }
 
-    const task = typeof payload.task === 'string' ? payload.task.trim() : '';
+    const task = typeof body.task === 'string' ? body.task.trim() : '';
     if (!task) {
       sendJson(res, 400, {
         started: false,
         success: false,
-        error: 'Body must include { "task": "..." }',
+        error: 'missing_task',
         branch: null,
         commit_message: null,
       });
       return;
     }
 
-    const result = await runAgentTask(task);
+    const result = await runTask(task);
     sendJson(res, result.success ? 200 : 500, result);
   });
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Phone runner listening on http://${HOST}:${PORT}`);
-  console.log(`Using agent: ${AGENT_PATH}`);
-  console.log(`Using repo:  ${REPO_PATH}`);
+  console.log(`phone-runner-server listening on http://${HOST}:${PORT}`);
+  console.log(`repo path: ${REPO_PATH}`);
 });
