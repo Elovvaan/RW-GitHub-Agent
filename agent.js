@@ -22,6 +22,7 @@ const MIN_TREE_FILES = 20;
 const MAX_TREE_FILES = 50;
 const MAX_SELECTED_FILES = 12;
 const MAX_FILE_BYTES = 80_000;
+const MAX_PATCH_CHANGED_LINES = 200;
 
 function run(cmd, cwd) {
   return execSync(cmd, {
@@ -130,14 +131,17 @@ function buildPrompt(task, treeSample, selectedFiles) {
   return [
     'You are a senior software engineer making minimal, repo-aware edits.',
     'Return strict JSON with this exact shape and nothing else:',
-    '{"commit_message":"string","files":[{"path":"relative/path","content":"full file content"}]}',
+    '{"files":[{"path":"relative/path","diff":"unified diff patch for this file"}],"branch":"string","commit_message":"string"}',
     'Rules:',
     '- Change only files needed for the task.',
     '- Prefer touching as few files as possible.',
     '- Do not include files that are unchanged.',
+    '- Return unified diffs only, never full file contents.',
+    '- Each diff must be line-based and patchable.',
     '- Paths must be relative and must already exist in the repository unless task explicitly asks to create files.',
     '- Do not include markdown fences.',
     '- commit_message should be concise and imperative.',
+    '- branch should be a short branch name suggestion for this task.',
     '',
     `Task: ${task}`,
     '',
@@ -194,16 +198,19 @@ async function callModel(prompt) {
     throw new Error('Invalid model JSON shape. Expected object with files array.');
   }
 
+  const branch =
+    typeof parsed.branch === 'string' && parsed.branch.trim().length > 0 ? parsed.branch.trim() : null;
+
   const commitMessage =
     typeof parsed.commit_message === 'string' && parsed.commit_message.trim().length > 0
       ? parsed.commit_message.trim()
       : 'Apply automated code updates';
 
   const files = parsed.files
-    .filter((f) => f && typeof f.path === 'string' && typeof f.content === 'string')
-    .map((f) => ({ path: f.path.trim(), content: f.content }));
+    .filter((f) => f && typeof f.path === 'string' && typeof f.diff === 'string')
+    .map((f) => ({ path: f.path.trim(), diff: f.diff }));
 
-  return { commitMessage, files };
+  return { branch, commitMessage, files };
 }
 
 function sanitizeBranchName(task) {
@@ -216,8 +223,8 @@ function sanitizeBranchName(task) {
   return `fix/${slug || 'task'}`;
 }
 
-function checkoutTaskBranch(repoPath, task) {
-  const branchBase = sanitizeBranchName(task);
+function checkoutTaskBranch(repoPath, task, requestedBranch) {
+  const branchBase = sanitizeBranchName(requestedBranch || task);
   let branch = branchBase;
   let counter = 2;
 
@@ -237,15 +244,61 @@ function taskAllowsCreatingFiles(task) {
   return /\b(create|add|new file|new files|scaffold|generate)\b/.test(lower);
 }
 
-function applyChanges(repoPath, updates, selectedPathsSet, allowCreate) {
+function taskAllowsLargeDiff(task) {
+  const lower = task.toLowerCase();
+  return /\b(allow large diff|allow big diff|more than 200 lines|> ?200 lines|over 200 lines)\b/.test(lower);
+}
+
+function normalizeRelPath(rawPath) {
+  const rel = rawPath.replace(/^\/+/, '').replace(/\\/g, '/');
+  if (!rel || rel.includes('..')) {
+    throw new Error(`Rejected unsafe path: ${rawPath}`);
+  }
+  return rel;
+}
+
+function extractTouchedFilesFromPatch(diffText) {
+  const touched = new Set();
+  const lines = diffText.split('\n');
+  for (const line of lines) {
+    let match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (match) {
+      touched.add(normalizeRelPath(match[2]));
+      continue;
+    }
+    match = line.match(/^\+\+\+ b\/(.+)$/);
+    if (match) {
+      touched.add(normalizeRelPath(match[1]));
+      continue;
+    }
+    match = line.match(/^\+\+\+ (.+)$/);
+    if (match && match[1] !== '/dev/null') {
+      touched.add(normalizeRelPath(match[1]));
+    }
+  }
+  return touched;
+}
+
+function countChangedPatchLines(diffText) {
+  return diffText.split('\n').reduce((count, line) => {
+    if (line.startsWith('+++') || line.startsWith('---')) return count;
+    if (line.startsWith('+') || line.startsWith('-')) return count + 1;
+    return count;
+  }, 0);
+}
+
+function ensureUnifiedPatchForFile(rel, diffText) {
+  if (/^diff --git /m.test(diffText)) return diffText;
+  if (/^--- /m.test(diffText) && /^\+\+\+ /m.test(diffText)) return diffText;
+  return [`diff --git a/${rel} b/${rel}`, `--- a/${rel}`, `+++ b/${rel}`, diffText].join('\n');
+}
+
+function applyDiffChanges(repoPath, updates, selectedPathsSet, allowCreate, allowLargeDiff) {
+  const patchChunks = [];
   const changedPaths = [];
 
   for (const update of updates) {
-    const rel = update.path.replace(/^\/+/, '');
-    if (!rel || rel.includes('..')) {
-      throw new Error(`Rejected unsafe path: ${update.path}`);
-    }
-
+    const rel = normalizeRelPath(update.path);
     if (!selectedPathsSet.has(rel)) {
       throw new Error(`Rejected path outside selected relevant files: ${rel}`);
     }
@@ -255,21 +308,53 @@ function applyChanges(repoPath, updates, selectedPathsSet, allowCreate) {
     if (!exists && !allowCreate) {
       throw new Error(`Rejected new file without explicit request: ${rel}`);
     }
-
     if (exists) {
       const stat = fs.statSync(full);
       if (!stat.isFile()) {
         throw new Error(`Rejected non-file path: ${rel}`);
       }
-    } else {
-      fs.mkdirSync(path.dirname(full), { recursive: true });
     }
 
-    const before = exists ? fs.readFileSync(full, 'utf8') : null;
-    if (before === update.content) continue;
+    const patchText = ensureUnifiedPatchForFile(rel, update.diff);
+    const touchedFiles = extractTouchedFilesFromPatch(patchText);
+    if (touchedFiles.size === 0) {
+      throw new Error(`Diff for ${rel} does not include patch headers or file targets.`);
+    }
+    for (const touched of touchedFiles) {
+      if (touched !== rel) {
+        throw new Error(`Rejected diff touching extra file ${touched}; expected only ${rel}`);
+      }
+      if (!selectedPathsSet.has(touched)) {
+        throw new Error(`Rejected diff touching unselected file: ${touched}`);
+      }
+    }
 
-    fs.writeFileSync(full, update.content, 'utf8');
+    const changedLineCount = countChangedPatchLines(patchText);
+    if (!allowLargeDiff && changedLineCount > MAX_PATCH_CHANGED_LINES) {
+      throw new Error(
+        `Rejected diff for ${rel}: ${changedLineCount} changed lines exceeds limit ${MAX_PATCH_CHANGED_LINES}`,
+      );
+    }
+
+    patchChunks.push(patchText.trimEnd());
     changedPaths.push(rel);
+  }
+
+  if (patchChunks.length === 0) return [];
+
+  const combinedPatch = `${patchChunks.join('\n\n')}\n`;
+  console.log('Diff preview (before apply):');
+  console.log(combinedPatch);
+
+  const tmpPatch = path.join(repoPath, '.agent.generated.patch');
+  fs.writeFileSync(tmpPatch, combinedPatch, 'utf8');
+  try {
+    run(`git apply --check --whitespace=nowarn '${tmpPatch}'`, repoPath);
+    run(`git apply --whitespace=nowarn '${tmpPatch}'`, repoPath);
+  } finally {
+    if (fs.existsSync(tmpPatch)) {
+      fs.unlinkSync(tmpPatch);
+    }
   }
 
   return changedPaths;
@@ -326,9 +411,16 @@ async function main() {
   const prompt = buildPrompt(task, treeSample, selected);
   const modelOut = await callModel(prompt);
 
-  const branch = checkoutTaskBranch(repoPath, task);
+  const branch = checkoutTaskBranch(repoPath, task, modelOut.branch);
   const allowCreate = taskAllowsCreatingFiles(task);
-  const changedPaths = applyChanges(repoPath, modelOut.files, selectedPathsSet, allowCreate);
+  const allowLargeDiff = taskAllowsLargeDiff(task);
+  const changedPaths = applyDiffChanges(
+    repoPath,
+    modelOut.files,
+    selectedPathsSet,
+    allowCreate,
+    allowLargeDiff,
+  );
 
   if (changedPaths.length === 0) {
     console.log(
