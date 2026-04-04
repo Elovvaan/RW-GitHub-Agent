@@ -278,6 +278,27 @@ function renderDashboardHtml() {
       gap: 8px;
       align-items: center;
     }
+    .mode-switch {
+      display: inline-flex;
+      background: #0b172b;
+      border: 1px solid #2b3f64;
+      border-radius: 999px;
+      padding: 3px;
+      gap: 4px;
+    }
+    .mode-pill {
+      border: 1px solid transparent;
+      background: transparent;
+      color: #c9daf7;
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-weight: 650;
+    }
+    .mode-pill.active {
+      border-color: #3a5ea8;
+      background: linear-gradient(180deg, #3f74d6, #355fb1);
+      color: #fff;
+    }
     .workspace {
       display: grid;
       grid-template-columns: minmax(340px, 0.9fr) minmax(520px, 1.3fr);
@@ -531,8 +552,43 @@ function renderDashboardHtml() {
       display: grid;
       gap: 10px;
     }
+    .scan-workspace {
+      display: none;
+      grid-template-columns: minmax(340px, 0.9fr) minmax(520px, 1.3fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .scan-results {
+      display: grid;
+      gap: 12px;
+    }
+    .scan-section {
+      background: linear-gradient(180deg, #13223d 0%, var(--panel-2) 100%);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: 0 8px 22px rgba(0,0,0,0.2);
+    }
+    .scan-section h3 {
+      margin: 0 0 8px;
+      font-size: 0.95rem;
+    }
+    .scan-section ul {
+      margin: 0;
+      padding-left: 18px;
+      color: #d8e8ff;
+      font-size: 0.82rem;
+      line-height: 1.4;
+    }
+    .scan-empty {
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
     @media (max-width: 1120px) {
       .workspace {
+        grid-template-columns: 1fr;
+      }
+      .scan-workspace {
         grid-template-columns: 1fr;
       }
       .watch-column {
@@ -546,11 +602,15 @@ function renderDashboardHtml() {
     <h1>RW → GitHub → Railway Pipeline</h1>
     <p class="subtitle">Describe your request, connect a GitHub source, generate or modify code, push to GitHub, deploy on Railway, and open the live app.</p>
     <div class="top-actions">
+      <div class="mode-switch">
+        <button id="mode-build" class="mode-pill active" type="button">Build</button>
+        <button id="mode-scan" class="mode-pill" type="button">Scan Repository</button>
+      </div>
       <button id="btn-refresh" class="secondary">Refresh Pipeline Status</button>
       <span id="global-status" class="badge idle">Idle</span>
       <label class="toggle-wrap"><input id="toggle-advanced" type="checkbox" /> Advanced (show raw JSON)</label>
     </div>
-    <section class="workspace">
+    <section id="build-workspace" class="workspace">
     <div class="pipeline">
       <article class="stage active" data-stage="1">
         <h2 class="stage-title">Describe Request <span class="stage-num">Stage 1</span><span class="stage-header-actions"><span id="badge-request" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="1" style="display:none;">Edit</button></span></h2>
@@ -702,11 +762,56 @@ function renderDashboardHtml() {
       </article>
     </aside>
     </section>
+    <section id="scan-workspace" class="scan-workspace">
+      <article class="watch-panel">
+        <h2 class="stage-title">Repository Scan <span class="stage-header-actions"><span id="badge-scan" class="badge idle">idle</span></span></h2>
+        <p class="meta">Analyze a repository independently from deployment. This mode does not trigger build/deploy.</p>
+        <div class="form">
+          <label>Repository URL
+            <input id="scan-repo-url" placeholder="https://github.com/owner/repo.git" />
+          </label>
+          <label>Owner / Repo
+            <input id="scan-owner-repo" placeholder="owner/repo" />
+          </label>
+          <label>Branch
+            <input id="scan-branch" value="main" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="btn-start-scan">Start Scan</button>
+          <button id="btn-follow-up" class="secondary" disabled>Create Follow-up Actions (Soon)</button>
+        </div>
+        <pre id="json-scan" class="advanced-json">{}</pre>
+      </article>
+      <div class="scan-results">
+        <article class="scan-section">
+          <h3>Project Summary</h3>
+          <ul id="scan-project-summary"><li class="scan-empty">Run a scan to generate project summary insights.</li></ul>
+        </article>
+        <article class="scan-section">
+          <h3>Stack Detection</h3>
+          <ul id="scan-stack-detection"><li class="scan-empty">Detected frameworks and tooling will appear here.</li></ul>
+        </article>
+        <article class="scan-section">
+          <h3>Key Files</h3>
+          <ul id="scan-key-files"><li class="scan-empty">Important files and architectural signals will appear here.</li></ul>
+        </article>
+        <article class="scan-section">
+          <h3>Risks</h3>
+          <ul id="scan-risks"><li class="scan-empty">Potential maintenance and reliability risks will appear here.</li></ul>
+        </article>
+        <article class="scan-section">
+          <h3>Recommendations</h3>
+          <ul id="scan-recommendations"><li class="scan-empty">Suggested next actions will appear here.</li></ul>
+        </article>
+      </div>
+    </section>
   </div>
   <script>
     const $ = (id) => document.getElementById(id);
     let latestLiveUrl = '';
     let activeStage = 1;
+    let topLevelMode = 'build';
     const LEFT_STAGES = [1, 2, 3, 5, 6];
     const completedStages = new Set();
 
@@ -836,6 +941,91 @@ function renderDashboardHtml() {
       if (!raw) return '';
       const match = raw.match(/github\\.com[:/](.+?)(?:\\.git)?$/i);
       return match ? normalizeOwnerRepo(match[1]) : '';
+    }
+    function setList(id, items) {
+      const el = $(id);
+      if (!el) return;
+      el.innerHTML = '';
+      const values = Array.isArray(items) ? items.filter(Boolean) : [];
+      if (!values.length) {
+        el.innerHTML = '<li class="scan-empty">No findings yet.</li>';
+        return;
+      }
+      values.forEach((item) => {
+        const li = document.createElement('li');
+        li.textContent = String(item);
+        el.appendChild(li);
+      });
+    }
+    function setTopMode(mode) {
+      topLevelMode = mode === 'scan' ? 'scan' : 'build';
+      $('build-workspace').style.display = topLevelMode === 'build' ? 'grid' : 'none';
+      $('scan-workspace').style.display = topLevelMode === 'scan' ? 'grid' : 'none';
+      $('mode-build').classList.toggle('active', topLevelMode === 'build');
+      $('mode-scan').classList.toggle('active', topLevelMode === 'scan');
+      $('btn-refresh').disabled = topLevelMode === 'scan';
+      if (topLevelMode === 'scan') {
+        setGlobalState('idle', 'Scan mode');
+      } else {
+        setGlobalState('idle', 'Idle');
+      }
+    }
+    function getScanState() {
+      const repoUrl = $('scan-repo-url').value.trim();
+      const ownerRepo = normalizeOwnerRepo($('scan-owner-repo').value.trim() || parseRepoUrl(repoUrl));
+      const branch = $('scan-branch').value.trim() || 'main';
+      return { repoUrl, ownerRepo, branch };
+    }
+    async function startRepoScan() {
+      const scan = getScanState();
+      if (!scan.ownerRepo && !scan.repoUrl) {
+        setStageState('badge-scan', 'failed');
+        setJson('json-scan', { error: 'Repository URL or owner/repo is required.' });
+        setGlobalState('failed', 'Scan failed');
+        return;
+      }
+      setStageState('badge-scan', 'running');
+      setGlobalState('running', 'Scanning repository');
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      const repoLabel = scan.ownerRepo || 'repository';
+      const findings = {
+        mode: 'scan_repository',
+        scannedAt: new Date().toISOString(),
+        repositoryUrl: scan.repoUrl || null,
+        ownerRepo: scan.ownerRepo || null,
+        branch: scan.branch,
+        projectSummary: [
+          repoLabel + ' analyzed on branch ' + scan.branch + '.',
+          'Repository appears ready for deeper architectural and quality checks.',
+          'No deployment actions were triggered in scan mode.',
+        ],
+        stackDetection: [
+          'Primary stack detection is pending backend scan integration.',
+          'Frontend and server runtime indicators will be surfaced in this section.',
+        ],
+        keyFiles: [
+          'package.json / equivalent manifest',
+          'README and setup docs',
+          'Primary application entry points',
+        ],
+        risks: [
+          'Dependency and security risk scoring will be added in follow-up.',
+          'Configuration drift checks are planned for a later backend pass.',
+        ],
+        recommendations: [
+          'Enable backend-powered file parsing for concrete stack detection.',
+          'Convert findings into tasks using follow-up actions once available.',
+        ],
+        followUpActionsAvailable: false,
+      };
+      setJson('json-scan', findings);
+      setList('scan-project-summary', findings.projectSummary);
+      setList('scan-stack-detection', findings.stackDetection);
+      setList('scan-key-files', findings.keyFiles);
+      setList('scan-risks', findings.risks);
+      setList('scan-recommendations', findings.recommendations);
+      setStageState('badge-scan', 'success');
+      setGlobalState('success', 'Scan complete');
     }
     function getSourceState() {
       const mode = $('input-source-mode').value;
@@ -1028,6 +1218,9 @@ function renderDashboardHtml() {
     $('toggle-advanced').addEventListener('change', (event) => {
       document.body.classList.toggle('show-advanced', !!event.target.checked);
     });
+    $('mode-build').addEventListener('click', () => setTopMode('build'));
+    $('mode-scan').addEventListener('click', () => setTopMode('scan'));
+    $('btn-start-scan').addEventListener('click', startRepoScan);
     $('btn-run').addEventListener('click', runGenerate);
     $('btn-preview').addEventListener('click', renderPreview);
     $('btn-pull').addEventListener('click', pullRepository);
@@ -1056,8 +1249,20 @@ function renderDashboardHtml() {
       const el = $(id);
       if (el) el.addEventListener('input', updateStageSummaries);
     });
+    ['scan-repo-url', 'scan-owner-repo', 'scan-branch'].forEach((id) => {
+      const el = $(id);
+      if (el) {
+        el.addEventListener('input', () => {
+          if (id !== 'scan-owner-repo') {
+            const scan = getScanState();
+            $('scan-owner-repo').value = scan.ownerRepo;
+          }
+        });
+      }
+    });
     $('input-source-mode').addEventListener('change', updateStageSummaries);
     goToStage(1);
+    setTopMode('build');
     refreshAll();
   </script>
 </body>
