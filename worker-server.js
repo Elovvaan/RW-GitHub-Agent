@@ -22,7 +22,8 @@ function sendText(res, code, text) {
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { cwd: options.cwd || process.cwd(), maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const executable = command === 'node' ? process.execPath : command;
+    execFile(executable, args, { cwd: options.cwd || process.cwd(), maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) {
         const err = new Error((stderr || stdout || error.message || 'command_failed').trim());
         err.stdout = String(stdout || '');
