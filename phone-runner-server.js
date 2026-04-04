@@ -1181,7 +1181,9 @@ function renderDashboardHtml() {
             const branch = String(result.data.branch || source.branch || safeValue('input-branch', 'main') || 'main');
             const branchInput = $('input-branch');
             if (branchInput) branchInput.value = branch;
-            const commitSha = safeTrim('input-commitSha');
+            const commitInput = $('input-commitSha');
+            const commitSha = String(result.data.commit_sha || safeTrim('input-commitSha')).trim();
+            if (commitInput && commitSha) commitInput.value = commitSha;
             const displayRepo = source.ownerRepo || (location.hostname || 'local');
             safeText('meta-generate', 'Repo: ' + displayRepo + ' · Branch: ' + branch);
 
@@ -1389,6 +1391,7 @@ function runTask(task) {
           error: (parsed && parsed.error) || String(stderr || error.message || 'Agent failed').trim(),
           branch: parsed?.branch || null,
           commit_message: parsed?.commit_message || null,
+          commit_sha: parsed?.commit_sha || null,
         });
         return;
       }
@@ -1398,6 +1401,7 @@ function runTask(task) {
         error: parsed?.error || null,
         branch: parsed?.branch || null,
         commit_message: parsed?.commit_message || null,
+        commit_sha: parsed?.commit_sha || null,
       });
     });
   });
