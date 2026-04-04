@@ -126,3 +126,21 @@ curl -sS -X POST "http://127.0.0.1:${PORT:-3000}/deployments/trigger" \
   -H "Content-Type: application/json" \
   -d '{"project":"demo","service":"api","branch":"main","commitSha":"<sha>"}'
 ```
+
+### Trigger deployment from browser/Node fetch
+```js
+const latestCommitSha = "PASTE_YOUR_LATEST_COMMIT_SHA_HERE"; // e.g. output from: git rev-parse HEAD
+
+fetch("https://rw-github-agent-production.up.railway.app/deployments/trigger", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    project: "RW-GitHub-Agent",
+    service: "main",
+    branch: "main",
+    commitSha: latestCommitSha
+  })
+})
+  .then((res) => res.json())
+  .then(console.log);
+```
