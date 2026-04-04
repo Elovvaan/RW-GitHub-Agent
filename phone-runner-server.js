@@ -231,36 +231,38 @@ function renderDashboardHtml() {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Phone Runner Control Plane</title>
+  <title>RW → GitHub → Railway Pipeline</title>
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0b1220;
-      --panel: #111a2b;
+      --bg: #07101f;
+      --panel: #101c31;
+      --panel-2: #0c1527;
       --panel-border: #24324b;
       --text: #e5ecfb;
       --muted: #9fb0d1;
-      --accent: #4f8cff;
+      --accent: #60a5fa;
       --ok: #22c55e;
       --warn: #f59e0b;
       --err: #ef4444;
+      --idle: #94a3b8;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-      background: radial-gradient(circle at top, #16233f, var(--bg));
+      background: radial-gradient(circle at top, #1a2c50 0%, var(--bg) 45%);
       color: var(--text);
       min-height: 100vh;
     }
     .wrap {
-      max-width: 1100px;
+      max-width: 1300px;
       margin: 0 auto;
-      padding: 18px;
+      padding: 20px 16px 26px;
     }
     h1 {
       margin: 0 0 8px;
-      font-size: clamp(1.2rem, 1.5vw + 1rem, 2rem);
+      font-size: clamp(1.3rem, 1.5vw + 1rem, 2rem);
       font-weight: 700;
       letter-spacing: 0.2px;
     }
@@ -269,88 +271,110 @@ function renderDashboardHtml() {
       color: var(--muted);
       font-size: 0.95rem;
     }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 12px;
+    .top-actions {
+      margin-bottom: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
     }
-    .card {
-      background: linear-gradient(180deg, #131f36 0%, var(--panel) 100%);
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(210px, 1fr));
+      gap: 10px;
+      overflow-x: auto;
+      padding-bottom: 6px;
+    }
+    .stage {
+      background: linear-gradient(180deg, #13223d 0%, var(--panel-2) 100%);
       border: 1px solid var(--panel-border);
       border-radius: 12px;
+      min-height: 340px;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      gap: 10px;
       padding: 12px;
-      min-height: 130px;
+      position: relative;
       box-shadow: 0 8px 22px rgba(0,0,0,0.2);
     }
-    .card h2 {
-      margin: 0 0 10px;
-      font-size: 0.96rem;
-      font-weight: 600;
-      color: #c7d5f4;
+    .stage:not(:last-child)::after {
+      content: '→';
+      position: absolute;
+      right: -9px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 18px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      color: #bfdbfe;
+      background: #182845;
+      border: 1px solid #2c4672;
+      font-size: 12px;
+      z-index: 2;
+    }
+    .stage-title {
+      margin: 0;
+      font-size: 0.98rem;
+      font-weight: 700;
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 8px;
     }
+    .stage-num {
+      font-size: 0.72rem;
+      color: #bfd5ff;
+      background: #1b2f52;
+      border: 1px solid #34558d;
+      border-radius: 999px;
+      padding: 2px 7px;
+    }
     .badge {
       display: inline-flex;
       align-items: center;
       border-radius: 999px;
-      padding: 3px 8px;
-      font-size: 0.72rem;
+      padding: 4px 8px;
+      font-size: 0.7rem;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.03em;
       border: 1px solid transparent;
       white-space: nowrap;
     }
-    .badge.ok { color: #bbf7d0; background: rgba(34,197,94,0.18); border-color: rgba(34,197,94,0.45); }
-    .badge.warn { color: #fde68a; background: rgba(245,158,11,0.18); border-color: rgba(245,158,11,0.45); }
-    .badge.err { color: #fecaca; background: rgba(239,68,68,0.18); border-color: rgba(239,68,68,0.45); }
-    .badge.neutral { color: #bfdbfe; background: rgba(79,140,255,0.16); border-color: rgba(79,140,255,0.4); }
-    .actions {
-      margin-top: 12px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
+    .badge.idle { color: #dbeafe; background: rgba(148,163,184,0.18); border-color: rgba(148,163,184,0.5); }
+    .badge.running { color: #fde68a; background: rgba(245,158,11,0.2); border-color: rgba(245,158,11,0.45); }
+    .badge.success { color: #bbf7d0; background: rgba(34,197,94,0.18); border-color: rgba(34,197,94,0.45); }
+    .badge.failed { color: #fecaca; background: rgba(239,68,68,0.18); border-color: rgba(239,68,68,0.45); }
+    .meta {
+      margin: 0;
+      font-size: 0.78rem;
+      color: var(--muted);
     }
-    button {
-      appearance: none;
-      border: 1px solid #3a5ea8;
-      background: linear-gradient(180deg, #3f74d6, #355fb1);
-      color: white;
-      border-radius: 10px;
-      padding: 9px 12px;
-      font-weight: 650;
-      font-size: 0.84rem;
-      cursor: pointer;
-    }
-    button.secondary {
-      border-color: #3f4a5f;
-      background: linear-gradient(180deg, #202c44, #172036);
-      color: #c8d5ef;
-    }
-    button:disabled { opacity: 0.6; cursor: progress; }
     pre {
       margin: 0;
-      max-height: 240px;
       overflow: auto;
-      padding: 10px;
+      padding: 9px;
       border-radius: 8px;
-      background: #0a1322;
+      background: #091222;
       border: 1px solid #23334f;
       color: #c7f0ff;
-      font-size: 0.76rem;
-      line-height: 1.4;
+      font-size: 0.74rem;
+      line-height: 1.35;
       white-space: pre-wrap;
       word-break: break-word;
+      min-height: 130px;
     }
     .form {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
       gap: 8px;
-      margin: 0 0 10px;
+    }
+    .dual {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
     }
     label {
       display: grid;
@@ -358,7 +382,7 @@ function renderDashboardHtml() {
       font-size: 0.74rem;
       color: var(--muted);
     }
-    input {
+    input, textarea {
       width: 100%;
       border-radius: 8px;
       border: 1px solid #2b3a57;
@@ -366,41 +390,90 @@ function renderDashboardHtml() {
       color: var(--text);
       padding: 8px 9px;
       font-size: 0.82rem;
+      font-family: inherit;
+    }
+    textarea {
+      min-height: 92px;
+      resize: vertical;
+    }
+    button {
+      appearance: none;
+      border: 1px solid #3a5ea8;
+      background: linear-gradient(180deg, #3f74d6, #355fb1);
+      color: white;
+      border-radius: 10px;
+      padding: 9px 11px;
+      font-weight: 650;
+      font-size: 0.82rem;
+      cursor: pointer;
+    }
+    button.secondary {
+      border-color: #3f4a5f;
+      background: linear-gradient(180deg, #202c44, #172036);
+      color: #c8d5ef;
+    }
+    button:disabled { opacity: 0.55; cursor: progress; }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .url-box {
+      background: #081426;
+      border: 1px solid #28436c;
+      border-radius: 10px;
+      padding: 9px;
+      font-size: 0.81rem;
+      color: #cfe4ff;
+      word-break: break-all;
+      min-height: 62px;
+      display: flex;
+      align-items: center;
     }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>Phone Runner Control Plane</h1>
-    <p class="subtitle">Live status and action panel for health, routing, deployments, and test runs.</p>
-    <div class="grid">
-      <section class="card">
-        <h2>Health <span id="badge-health" class="badge neutral">Loading</span></h2>
-        <pre id="json-health">{}</pre>
-      </section>
-      <section class="card">
-        <h2>Worker Connected <span id="badge-worker" class="badge neutral">Unknown</span></h2>
-        <pre id="json-worker">{}</pre>
-      </section>
-      <section class="card">
-        <h2>Active Routes <span id="badge-routes" class="badge neutral">Loading</span></h2>
-        <pre id="json-route">{}</pre>
-      </section>
-      <section class="card">
-        <h2>Latest Deployment <span id="badge-deployment" class="badge neutral">Loading</span></h2>
-        <pre id="json-deployment">{}</pre>
-      </section>
-      <section class="card" style="grid-column: 1 / -1;">
-        <h2>Recent Result <span id="badge-result" class="badge neutral">Idle</span></h2>
-        <pre id="json-result">{}</pre>
-        <div class="actions">
-          <button id="btn-run">Run Test</button>
-          <button id="btn-refresh" class="secondary">Refresh Status</button>
-        </div>
-      </section>
-      <section class="card" style="grid-column: 1 / -1;">
-        <h2>Trigger Deployment <span id="badge-trigger" class="badge neutral">Ready</span></h2>
+    <h1>RW → GitHub → Railway Pipeline</h1>
+    <p class="subtitle">Submit a build request, generate code, push to GitHub, deploy on Railway, and open the live app.</p>
+    <div class="top-actions">
+      <button id="btn-refresh" class="secondary">Refresh Pipeline Status</button>
+      <span id="global-status" class="badge idle">Idle</span>
+    </div>
+    <section class="pipeline">
+      <article class="stage">
+        <h2 class="stage-title">Request <span class="stage-num">Stage 1</span></h2>
+        <span id="badge-request" class="badge idle">idle</span>
+        <p class="meta">Describe what RW should build.</p>
         <div class="form">
+          <label>Build request
+            <textarea id="input-task">Build a minimal app and return deploy status.</textarea>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="btn-run">Start Flow</button>
+        </div>
+      </article>
+      <article class="stage">
+        <h2 class="stage-title">Generate Code <span class="stage-num">Stage 2</span></h2>
+        <span id="badge-generate" class="badge idle">idle</span>
+        <p class="meta">Run RW code generation and capture Git metadata.</p>
+        <pre id="json-generate">{}</pre>
+        <div class="meta" id="meta-generate">Repo: pending</div>
+      </article>
+      <article class="stage">
+        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 3</span></h2>
+        <span id="badge-push" class="badge idle">idle</span>
+        <p class="meta">Simulated push details from branch and commit SHA.</p>
+        <pre id="json-github">{}</pre>
+        <div class="meta" id="meta-github">Branch: pending · Commit: pending</div>
+      </article>
+      <article class="stage">
+        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 4</span></h2>
+        <span id="badge-railway" class="badge idle">idle</span>
+        <p class="meta">Uses existing deployment trigger and status logic.</p>
+        <div class="form dual">
           <label>Project
             <input id="input-project" value="demo-project" />
           </label>
@@ -414,88 +487,134 @@ function renderDashboardHtml() {
             <input id="input-commitSha" value="0000000000000000000000000000000000000000" />
           </label>
         </div>
+        <pre id="json-deployment">{}</pre>
         <div class="actions">
-          <button id="btn-trigger">Trigger Deployment</button>
+          <button id="btn-trigger">Deploy on Railway</button>
         </div>
-      </section>
-    </div>
+      </article>
+      <article class="stage">
+        <h2 class="stage-title">Live App <span class="stage-num">Stage 5</span></h2>
+        <span id="badge-live" class="badge idle">idle</span>
+        <p class="meta">Final URL from the latest successful deployment.</p>
+        <div id="live-url" class="url-box">No live URL yet.</div>
+        <pre id="json-route">{}</pre>
+        <div class="actions">
+          <button id="btn-open" class="secondary" disabled>Open Live App</button>
+        </div>
+      </article>
+    </section>
   </div>
   <script>
     const $ = (id) => document.getElementById(id);
+    let latestLiveUrl = '';
+
     function pretty(value) {
       return JSON.stringify(value ?? null, null, 2);
     }
     function setJson(id, payload) {
-      $(id).textContent = pretty(payload);
-    }
-    function setBadge(id, label, kind) {
       const el = $(id);
-      el.textContent = label;
-      el.className = 'badge ' + (kind || 'neutral');
+      if (el) el.textContent = pretty(payload);
+    }
+    function setStageState(id, state) {
+      const el = $(id);
+      if (!el) return;
+      const normalized = ['idle', 'running', 'success', 'failed'].includes(state) ? state : 'idle';
+      el.textContent = normalized;
+      el.className = 'badge ' + normalized;
+    }
+    function setGlobalState(state, label) {
+      const el = $('global-status');
+      const normalized = ['idle', 'running', 'success', 'failed'].includes(state) ? state : 'idle';
+      el.textContent = label || normalized;
+      el.className = 'badge ' + normalized;
+    }
+    function setLiveUrl(url) {
+      latestLiveUrl = String(url || '').trim();
+      $('live-url').textContent = latestLiveUrl || 'No live URL yet.';
+      $('btn-open').disabled = !latestLiveUrl;
+      setStageState('badge-live', latestLiveUrl ? 'success' : 'idle');
     }
     async function fetchJson(url, options) {
       const res = await fetch(url, options);
       const data = await res.json().catch(() => ({}));
       return { ok: res.ok, status: res.status, data };
     }
-    async function loadHealth() {
-      const result = await fetchJson('/health');
-      setJson('json-health', result.data);
-      setBadge('badge-health', result.ok && result.data.ok ? 'OK' : 'Unhealthy', result.ok && result.data.ok ? 'ok' : 'err');
-      setJson('json-worker', { workerConfigured: !!result.data.workerConfigured });
-      setBadge('badge-worker', result.data.workerConfigured ? 'Connected' : 'Not Configured', result.data.workerConfigured ? 'ok' : 'warn');
+    function shortCommit(sha) {
+      const text = String(sha || '').trim();
+      return text ? text.slice(0, 7) : 'pending';
     }
-    async function loadRoutes() {
-      const result = await fetchJson('/route');
-      setJson('json-route', result.data);
-      const count = Array.isArray(result.data.routes) ? result.data.routes.length : 0;
-      setBadge('badge-routes', String(count), count > 0 ? 'ok' : 'warn');
-    }
-    async function loadLatestDeployment() {
-      const result = await fetchJson('/deployments/latest');
-      setJson('json-deployment', result.data);
-      if (!result.ok) {
-        setBadge('badge-deployment', 'None', 'warn');
-        return;
+    async function refreshRouteAndDeployment() {
+      const routeResult = await fetchJson('/route');
+      setJson('json-route', routeResult.data);
+      const liveFromRoute = Array.isArray(routeResult.data.routes) && routeResult.data.routes[0]
+        ? 'http://' + routeResult.data.routes[0].domain
+        : '';
+
+      const depResult = await fetchJson('/deployments/latest');
+      setJson('json-deployment', depResult.data);
+      const dep = depResult.data || {};
+      const depStatus = String(dep.status || '').toLowerCase();
+      if (depStatus === 'success') {
+        setStageState('badge-railway', 'success');
+      } else if (depStatus === 'failed') {
+        setStageState('badge-railway', 'failed');
+      } else if (depStatus) {
+        setStageState('badge-railway', 'running');
+      } else {
+        setStageState('badge-railway', 'idle');
       }
-      const status = String(result.data.status || 'unknown');
-      const kind = status === 'success' ? 'ok' : status === 'failed' ? 'err' : 'warn';
-      setBadge('badge-deployment', status, kind);
+      setLiveUrl(dep.url || liveFromRoute || '');
     }
-    async function refreshAll() {
-      setBadge('badge-result', 'Loading', 'neutral');
-      try {
-        await Promise.all([loadHealth(), loadRoutes(), loadLatestDeployment()]);
-        setBadge('badge-result', 'Ready', 'ok');
-      } catch (err) {
-        setJson('json-result', { error: String(err && err.message || err) });
-        setBadge('badge-result', 'Load Error', 'err');
-      }
-    }
-    async function runTest() {
-      const button = $('btn-run');
-      button.disabled = true;
-      setBadge('badge-result', 'Running', 'warn');
-      const payload = { task: 'Echo a short status update and exit.' };
+    async function runGenerate() {
+      setStageState('badge-request', 'success');
+      setStageState('badge-generate', 'running');
+      setStageState('badge-push', 'idle');
+      setStageState('badge-live', 'idle');
+      setGlobalState('running', 'Flow running');
+
+      const payload = { task: $('input-task').value.trim() || 'Echo a short status update and exit.' };
       try {
         const result = await fetchJson('/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        setJson('json-result', result.data);
-        setBadge('badge-result', result.ok ? 'Success' : 'Failed', result.ok ? 'ok' : 'err');
+        setJson('json-generate', result.data);
+        if (!result.ok || !result.data || result.data.success === false) {
+          setStageState('badge-generate', 'failed');
+          setStageState('badge-push', 'failed');
+          setGlobalState('failed', 'Flow failed');
+          return;
+        }
+        setStageState('badge-generate', 'success');
+        const branch = String(result.data.branch || $('input-branch').value || 'main');
+        $('input-branch').value = branch;
+        const commitSha = String(($('input-commitSha').value || '').trim());
+        $('meta-generate').textContent = 'Repo: ' + (location.hostname || 'local') + ' · Branch: ' + branch;
+
+        const githubData = {
+          repo: location.hostname || 'local-repo',
+          branch,
+          commit: commitSha,
+          commitMessage: result.data.commit_message || 'Generated by RW pipeline',
+          status: 'pushed',
+        };
+        setJson('json-github', githubData);
+        $('meta-github').textContent = 'Branch: ' + branch + ' · Commit: ' + shortCommit(commitSha);
+        setStageState('badge-push', 'success');
+        setGlobalState('running', 'Ready to deploy');
       } catch (err) {
-        setJson('json-result', { error: String(err && err.message || err) });
-        setBadge('badge-result', 'Error', 'err');
-      } finally {
-        button.disabled = false;
+        setJson('json-generate', { error: String(err && err.message || err) });
+        setStageState('badge-generate', 'failed');
+        setStageState('badge-push', 'failed');
+        setGlobalState('failed', 'Flow failed');
       }
     }
     async function triggerDeployment() {
       const button = $('btn-trigger');
       button.disabled = true;
-      setBadge('badge-trigger', 'Sending', 'warn');
+      setStageState('badge-railway', 'running');
+      setGlobalState('running', 'Deploying on Railway');
       const payload = {
         project: $('input-project').value.trim(),
         service: $('input-service').value.trim(),
@@ -508,19 +627,39 @@ function renderDashboardHtml() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        setJson('json-result', result.data);
-        setBadge('badge-result', result.ok ? 'Success' : 'Failed', result.ok ? 'ok' : 'err');
-        setBadge('badge-trigger', result.ok ? 'Triggered' : 'Rejected', result.ok ? 'ok' : 'err');
+        setJson('json-deployment', result.data);
+        setStageState('badge-railway', result.ok ? 'success' : 'failed');
+        await refreshRouteAndDeployment();
+        setGlobalState(result.ok ? 'success' : 'failed', result.ok ? 'Pipeline ready' : 'Deploy failed');
       } catch (err) {
-        setJson('json-result', { error: String(err && err.message || err) });
-        setBadge('badge-trigger', 'Error', 'err');
+        setJson('json-deployment', { error: String(err && err.message || err) });
+        setStageState('badge-railway', 'failed');
+        setGlobalState('failed', 'Deploy failed');
       } finally {
         button.disabled = false;
       }
     }
-    $('btn-run').addEventListener('click', runTest);
-    $('btn-refresh').addEventListener('click', refreshAll);
+    async function refreshAll() {
+      setGlobalState('running', 'Refreshing');
+      try {
+        await refreshRouteAndDeployment();
+        const health = await fetchJson('/health');
+        const worker = !!(health.data && health.data.workerConfigured);
+        if (!worker) setStageState('badge-request', 'idle');
+        setGlobalState('idle', 'Idle');
+      } catch (err) {
+        setJson('json-github', { error: String(err && err.message || err) });
+        setGlobalState('failed', 'Refresh failed');
+      }
+    }
+    function openLiveApp() {
+      if (latestLiveUrl) window.open(latestLiveUrl, '_blank', 'noopener');
+    }
+
+    $('btn-run').addEventListener('click', runGenerate);
     $('btn-trigger').addEventListener('click', triggerDeployment);
+    $('btn-refresh').addEventListener('click', refreshAll);
+    $('btn-open').addEventListener('click', openLiveApp);
     refreshAll();
   </script>
 </body>
