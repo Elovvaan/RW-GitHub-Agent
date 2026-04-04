@@ -278,10 +278,33 @@ function renderDashboardHtml() {
       gap: 8px;
       align-items: center;
     }
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(340px, 0.9fr) minmax(520px, 1.3fr);
+      gap: 16px;
+      align-items: start;
+    }
     .pipeline {
       display: grid;
       gap: 10px;
       padding-bottom: 6px;
+    }
+    .watch-column {
+      display: grid;
+      gap: 12px;
+      position: sticky;
+      top: 12px;
+    }
+    .watch-panel {
+      background: linear-gradient(180deg, #13223d 0%, var(--panel-2) 100%);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      min-height: 300px;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 10px;
+      padding: 12px;
+      box-shadow: 0 8px 22px rgba(0,0,0,0.2);
     }
     .stage {
       background: linear-gradient(180deg, #13223d 0%, var(--panel-2) 100%);
@@ -508,6 +531,14 @@ function renderDashboardHtml() {
       display: grid;
       gap: 10px;
     }
+    @media (max-width: 1120px) {
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+      .watch-column {
+        position: static;
+      }
+    }
   </style>
 </head>
 <body>
@@ -519,7 +550,8 @@ function renderDashboardHtml() {
       <span id="global-status" class="badge idle">Idle</span>
       <label class="toggle-wrap"><input id="toggle-advanced" type="checkbox" /> Advanced (show raw JSON)</label>
     </div>
-    <section class="pipeline">
+    <section class="workspace">
+    <div class="pipeline">
       <article class="stage active" data-stage="1">
         <h2 class="stage-title">Describe Request <span class="stage-num">Stage 1</span><span class="stage-header-actions"><span id="badge-request" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="1" style="display:none;">Edit</button></span></h2>
         <p class="meta">Tell RW what you want built or changed.</p>
@@ -584,40 +616,8 @@ function renderDashboardHtml() {
           <button id="btn-continue-3">Continue</button>
         </div>
       </article>
-      <article class="stage minimized" data-stage="4">
-        <h2 class="stage-title">Preview <span class="stage-num">Stage 4</span><span class="stage-header-actions"><span id="badge-preview" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="4">Edit</button></span></h2>
-        <p class="meta">Generate a visual preview before pushing code to GitHub.</p>
-        <div class="stage-summary" id="summary-stage-4">Preview: not rendered.</div>
-        <div class="stage-content">
-          <div class="preview-board">
-            <div class="preview-header"></div>
-            <div class="preview-blocks">
-              <div class="preview-card">
-                <div class="preview-line"></div>
-                <div class="preview-line" style="width:82%"></div>
-                <div class="preview-line" style="width:66%"></div>
-                <div class="preview-line" style="width:54%"></div>
-              </div>
-              <div class="preview-sidebar">
-                <div class="preview-line"></div>
-                <div class="preview-line" style="width:76%"></div>
-                <div class="preview-line" style="width:62%"></div>
-              </div>
-            </div>
-          </div>
-          <div id="preview-summary" class="preview-summary">Preview summary will appear after generation.</div>
-          <pre id="json-preview" class="advanced-json">{}</pre>
-          <div class="actions">
-            <button id="btn-preview">Render Preview</button>
-          </div>
-        </div>
-        <div class="stage-nav">
-          <button id="btn-back-4" class="secondary">Back</button>
-          <button id="btn-continue-4">Continue</button>
-        </div>
-      </article>
       <article class="stage minimized" data-stage="5">
-        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 5</span><span class="stage-header-actions"><span id="badge-push" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="5">Edit</button></span></h2>
+        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 4</span><span class="stage-header-actions"><span id="badge-push" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="5">Edit</button></span></h2>
         <p class="meta">Simulated push details from branch and commit SHA.</p>
         <div class="stage-summary" id="summary-stage-5">Push status: pending.</div>
         <div class="stage-content">
@@ -630,7 +630,7 @@ function renderDashboardHtml() {
         </div>
       </article>
       <article class="stage minimized" data-stage="6">
-        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 6</span><span class="stage-header-actions"><span id="badge-railway" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="6">Edit</button></span></h2>
+        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 5</span><span class="stage-header-actions"><span id="badge-railway" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="6">Edit</button></span></h2>
         <p class="meta">Uses existing deployment trigger and status logic.</p>
         <div class="stage-summary" id="summary-stage-6">Deploy status: pending.</div>
         <div class="stage-content">
@@ -658,8 +658,38 @@ function renderDashboardHtml() {
           <button id="btn-continue-6">Continue</button>
         </div>
       </article>
-      <article class="stage minimized" data-stage="7">
-        <h2 class="stage-title">Live App <span class="stage-num">Stage 7</span><span class="stage-header-actions"><span id="badge-live" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="7">Edit</button></span></h2>
+    </div>
+    <aside class="watch-column">
+      <article class="watch-panel">
+        <h2 class="stage-title">Preview <span class="stage-header-actions"><span id="badge-preview" class="badge idle">idle</span></span></h2>
+        <p class="meta">Persistent visual preview that updates as you move through the workflow.</p>
+        <div class="stage-summary" id="summary-stage-4">Preview: not rendered.</div>
+        <div class="stage-content">
+          <div class="preview-board">
+            <div class="preview-header"></div>
+            <div class="preview-blocks">
+              <div class="preview-card">
+                <div class="preview-line"></div>
+                <div class="preview-line" style="width:82%"></div>
+                <div class="preview-line" style="width:66%"></div>
+                <div class="preview-line" style="width:54%"></div>
+              </div>
+              <div class="preview-sidebar">
+                <div class="preview-line"></div>
+                <div class="preview-line" style="width:76%"></div>
+                <div class="preview-line" style="width:62%"></div>
+              </div>
+            </div>
+          </div>
+          <div id="preview-summary" class="preview-summary">Preview summary will appear after generation.</div>
+          <pre id="json-preview" class="advanced-json">{}</pre>
+          <div class="actions">
+            <button id="btn-preview">Render Preview</button>
+          </div>
+        </div>
+      </article>
+      <article class="watch-panel">
+        <h2 class="stage-title">Live App <span class="stage-header-actions"><span id="badge-live" class="badge idle">idle</span></span></h2>
         <p class="meta">Final URL from the latest successful deployment.</p>
         <div class="stage-summary" id="summary-stage-7">Live app: not available.</div>
         <div class="stage-content">
@@ -669,16 +699,15 @@ function renderDashboardHtml() {
             <button id="btn-open" class="secondary" disabled>Open Live App</button>
           </div>
         </div>
-        <div class="stage-nav">
-          <button id="btn-back-7" class="secondary">Back</button>
-        </div>
       </article>
+    </aside>
     </section>
   </div>
   <script>
     const $ = (id) => document.getElementById(id);
     let latestLiveUrl = '';
     let activeStage = 1;
+    const LEFT_STAGES = [1, 2, 3, 5, 6];
     const completedStages = new Set();
 
     function stageEl(index) {
@@ -705,7 +734,11 @@ function renderDashboardHtml() {
       if (editBtn) editBtn.style.display = completedStages.has(index) ? '' : 'none';
     }
     function goToStage(index) {
-      activeStage = Math.max(1, Math.min(7, index));
+      const requested = Math.max(1, Math.min(6, index));
+      const fallback = LEFT_STAGES.includes(requested)
+        ? requested
+        : LEFT_STAGES.reduce((best, current) => (Math.abs(current - requested) < Math.abs(best - requested) ? current : best), LEFT_STAGES[0]);
+      activeStage = fallback;
       document.querySelectorAll('.stage[data-stage]').forEach((el) => {
         const idx = Number(el.dataset.stage);
         const isActive = idx === activeStage;
@@ -717,10 +750,14 @@ function renderDashboardHtml() {
     }
     function continueStage(index) {
       markStageCompleted(index, true);
-      goToStage(index + 1);
+      const current = LEFT_STAGES.indexOf(index);
+      const next = current >= 0 ? LEFT_STAGES[Math.min(current + 1, LEFT_STAGES.length - 1)] : LEFT_STAGES[0];
+      goToStage(next);
     }
     function backStage(index) {
-      goToStage(index - 1);
+      const current = LEFT_STAGES.indexOf(index);
+      const prev = current > 0 ? LEFT_STAGES[current - 1] : LEFT_STAGES[0];
+      goToStage(prev);
     }
 
     function pretty(value) {
@@ -1004,15 +1041,12 @@ function renderDashboardHtml() {
     });
     $('btn-continue-2').addEventListener('click', () => continueStage(2));
     $('btn-continue-3').addEventListener('click', () => continueStage(3));
-    $('btn-continue-4').addEventListener('click', () => continueStage(4));
     $('btn-continue-5').addEventListener('click', () => continueStage(5));
     $('btn-continue-6').addEventListener('click', () => continueStage(6));
     $('btn-back-2').addEventListener('click', () => backStage(2));
     $('btn-back-3').addEventListener('click', () => backStage(3));
-    $('btn-back-4').addEventListener('click', () => backStage(4));
     $('btn-back-5').addEventListener('click', () => backStage(5));
     $('btn-back-6').addEventListener('click', () => backStage(6));
-    $('btn-back-7').addEventListener('click', () => backStage(7));
     document.querySelectorAll('.btn-edit-stage').forEach((button) => {
       button.addEventListener('click', () => {
         goToStage(Number(button.dataset.targetStage || 1));
