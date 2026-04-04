@@ -280,7 +280,7 @@ function renderDashboardHtml() {
     }
     .pipeline {
       display: grid;
-      grid-template-columns: repeat(5, minmax(210px, 1fr));
+      grid-template-columns: repeat(6, minmax(210px, 1fr));
       gap: 10px;
       overflow-x: auto;
       padding-bottom: 6px;
@@ -382,7 +382,7 @@ function renderDashboardHtml() {
       font-size: 0.74rem;
       color: var(--muted);
     }
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       border-radius: 8px;
       border: 1px solid #2b3a57;
@@ -436,41 +436,68 @@ function renderDashboardHtml() {
 <body>
   <div class="wrap">
     <h1>RW → GitHub → Railway Pipeline</h1>
-    <p class="subtitle">Submit a build request, generate code, push to GitHub, deploy on Railway, and open the live app.</p>
+    <p class="subtitle">Describe your request, connect a GitHub source, generate or modify code, push to GitHub, deploy on Railway, and open the live app.</p>
     <div class="top-actions">
       <button id="btn-refresh" class="secondary">Refresh Pipeline Status</button>
       <span id="global-status" class="badge idle">Idle</span>
     </div>
     <section class="pipeline">
       <article class="stage">
-        <h2 class="stage-title">Request <span class="stage-num">Stage 1</span></h2>
+        <h2 class="stage-title">Describe Request <span class="stage-num">Stage 1</span></h2>
         <span id="badge-request" class="badge idle">idle</span>
-        <p class="meta">Describe what RW should build.</p>
+        <p class="meta">Tell RW what you want built or changed.</p>
         <div class="form">
           <label>Build request
             <textarea id="input-task">Build a minimal app and return deploy status.</textarea>
           </label>
         </div>
+      </article>
+      <article class="stage">
+        <h2 class="stage-title">GitHub Source <span class="stage-num">Stage 2</span></h2>
+        <span id="badge-source" class="badge idle">idle</span>
+        <p class="meta">Choose New Project or Existing Repo, then connect or load GitHub code.</p>
+        <div class="form">
+          <label>Mode
+            <select id="input-source-mode">
+              <option value="new">New Project</option>
+              <option value="existing">Existing Repo</option>
+            </select>
+          </label>
+          <label>Repository URL
+            <input id="input-repo-url" placeholder="https://github.com/owner/repo.git" />
+          </label>
+          <label>Owner / Repo
+            <input id="input-owner-repo" placeholder="owner/repo" />
+          </label>
+          <label>Branch
+            <input id="input-source-branch" value="main" />
+          </label>
+        </div>
+        <pre id="json-source">{}</pre>
+        <div class="meta" id="meta-source">Source: not loaded</div>
         <div class="actions">
-          <button id="btn-run">Start Flow</button>
+          <button id="btn-pull">Pull Repository</button>
         </div>
       </article>
       <article class="stage">
-        <h2 class="stage-title">Generate Code <span class="stage-num">Stage 2</span></h2>
+        <h2 class="stage-title">Generate / Modify Code <span class="stage-num">Stage 3</span></h2>
         <span id="badge-generate" class="badge idle">idle</span>
-        <p class="meta">Run RW code generation and capture Git metadata.</p>
+        <p class="meta">Run RW generation for new projects or modifications for loaded repositories.</p>
         <pre id="json-generate">{}</pre>
         <div class="meta" id="meta-generate">Repo: pending</div>
+        <div class="actions">
+          <button id="btn-run">Generate / Modify Code</button>
+        </div>
       </article>
       <article class="stage">
-        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 3</span></h2>
+        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 4</span></h2>
         <span id="badge-push" class="badge idle">idle</span>
         <p class="meta">Simulated push details from branch and commit SHA.</p>
         <pre id="json-github">{}</pre>
         <div class="meta" id="meta-github">Branch: pending · Commit: pending</div>
       </article>
       <article class="stage">
-        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 4</span></h2>
+        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 5</span></h2>
         <span id="badge-railway" class="badge idle">idle</span>
         <p class="meta">Uses existing deployment trigger and status logic.</p>
         <div class="form dual">
@@ -493,7 +520,7 @@ function renderDashboardHtml() {
         </div>
       </article>
       <article class="stage">
-        <h2 class="stage-title">Live App <span class="stage-num">Stage 5</span></h2>
+        <h2 class="stage-title">Live App <span class="stage-num">Stage 6</span></h2>
         <span id="badge-live" class="badge idle">idle</span>
         <p class="meta">Final URL from the latest successful deployment.</p>
         <div id="live-url" class="url-box">No live URL yet.</div>
@@ -543,6 +570,58 @@ function renderDashboardHtml() {
       const text = String(sha || '').trim();
       return text ? text.slice(0, 7) : 'pending';
     }
+    function normalizeOwnerRepo(raw) {
+      const text = String(raw || '').trim().replace(/^\/+|\/+$/g, '');
+      if (!text) return '';
+      const parts = text.split('/').filter(Boolean);
+      if (parts.length < 2) return text;
+      return parts[0] + '/' + parts[1].replace(/\.git$/, '');
+    }
+    function parseRepoUrl(repoUrl) {
+      const raw = String(repoUrl || '').trim();
+      if (!raw) return '';
+      const match = raw.match(/github\\.com[:/](.+?)(?:\\.git)?$/i);
+      return match ? normalizeOwnerRepo(match[1]) : '';
+    }
+    function getSourceState() {
+      const mode = $('input-source-mode').value;
+      const repoUrl = $('input-repo-url').value.trim();
+      const ownerRepoInput = $('input-owner-repo').value.trim();
+      const parsedFromUrl = parseRepoUrl(repoUrl);
+      const ownerRepo = normalizeOwnerRepo(ownerRepoInput || parsedFromUrl);
+      const branch = $('input-source-branch').value.trim() || 'main';
+      return { mode, repoUrl, ownerRepo, branch };
+    }
+    async function pullRepository() {
+      setStageState('badge-source', 'running');
+      setGlobalState('running', 'Loading GitHub source');
+      const source = getSourceState();
+      if (!source.ownerRepo && source.mode === 'existing') {
+        const err = { error: 'Owner/repo is required for Existing Repo mode.' };
+        setJson('json-source', err);
+        $('meta-source').textContent = err.error;
+        setStageState('badge-source', 'failed');
+        setGlobalState('failed', 'Source load failed');
+        return;
+      }
+
+      const details = {
+        loaded: true,
+        mode: source.mode,
+        repositoryUrl: source.repoUrl || null,
+        ownerRepo: source.ownerRepo || null,
+        branch: source.branch,
+        sourceStatus: source.mode === 'new' ? 'new_project_ready' : 'repository_loaded',
+      };
+      setJson('json-source', details);
+      $('input-owner-repo').value = source.ownerRepo;
+      $('input-branch').value = source.branch;
+      $('meta-source').textContent = source.mode === 'new'
+        ? 'New Project ready' + (source.ownerRepo ? ' · Target: ' + source.ownerRepo : '') + ' · Branch: ' + source.branch
+        : 'Loaded: ' + source.ownerRepo + ' · Branch: ' + source.branch;
+      setStageState('badge-source', 'success');
+      setGlobalState('idle', 'Source ready');
+    }
     async function refreshRouteAndDeployment() {
       const routeResult = await fetchJson('/route');
       setJson('json-route', routeResult.data);
@@ -567,6 +646,18 @@ function renderDashboardHtml() {
     }
     async function runGenerate() {
       setStageState('badge-request', 'success');
+      const source = getSourceState();
+      if (!source.ownerRepo && source.mode === 'existing') {
+        setJson('json-source', { error: 'Load an existing repository in GitHub Source before generating.' });
+        $('meta-source').textContent = 'Source: existing repo not loaded';
+        setStageState('badge-source', 'failed');
+        setStageState('badge-generate', 'failed');
+        setGlobalState('failed', 'Flow failed');
+        return;
+      }
+      if (source.ownerRepo || source.repoUrl || source.mode === 'new') {
+        setStageState('badge-source', 'success');
+      }
       setStageState('badge-generate', 'running');
       setStageState('badge-push', 'idle');
       setStageState('badge-live', 'idle');
@@ -587,13 +678,14 @@ function renderDashboardHtml() {
           return;
         }
         setStageState('badge-generate', 'success');
-        const branch = String(result.data.branch || $('input-branch').value || 'main');
+        const branch = String(result.data.branch || source.branch || $('input-branch').value || 'main');
         $('input-branch').value = branch;
         const commitSha = String(($('input-commitSha').value || '').trim());
-        $('meta-generate').textContent = 'Repo: ' + (location.hostname || 'local') + ' · Branch: ' + branch;
+        const displayRepo = source.ownerRepo || (location.hostname || 'local');
+        $('meta-generate').textContent = 'Repo: ' + displayRepo + ' · Branch: ' + branch;
 
         const githubData = {
-          repo: location.hostname || 'local-repo',
+          repo: displayRepo || 'local-repo',
           branch,
           commit: commitSha,
           commitMessage: result.data.commit_message || 'Generated by RW pipeline',
@@ -657,6 +749,7 @@ function renderDashboardHtml() {
     }
 
     $('btn-run').addEventListener('click', runGenerate);
+    $('btn-pull').addEventListener('click', pullRepository);
     $('btn-trigger').addEventListener('click', triggerDeployment);
     $('btn-refresh').addEventListener('click', refreshAll);
     $('btn-open').addEventListener('click', openLiveApp);
