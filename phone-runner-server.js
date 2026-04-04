@@ -808,10 +808,56 @@ function renderDashboardHtml() {
     </section>
   </div>
   <script>
+    function createInitDebugBadge() {
+      const badge = document.createElement('div');
+      badge.id = 'ui-init-debug';
+      badge.style.position = 'fixed';
+      badge.style.right = '10px';
+      badge.style.bottom = '10px';
+      badge.style.zIndex = '9999';
+      badge.style.padding = '6px 10px';
+      badge.style.borderRadius = '999px';
+      badge.style.fontSize = '12px';
+      badge.style.fontWeight = '600';
+      badge.style.letterSpacing = '0.02em';
+      badge.style.border = '1px solid rgba(255,255,255,0.15)';
+      badge.style.background = 'rgba(15,23,42,0.9)';
+      badge.style.color = '#bfdbfe';
+      badge.textContent = 'Initializing UI…';
+      document.body.appendChild(badge);
+      return badge;
+    }
+
     function initDashboard() {
-      const $ = (id) => document.getElementById(id);
-      const bySelector = (selector) => document.querySelector(selector);
-      const bySelectorAll = (selector) => Array.from(document.querySelectorAll(selector));
+      let firstInitError = null;
+      const debugBadge = createInitDebugBadge();
+      const setDebug = (text, isError) => {
+        if (!debugBadge) return;
+        debugBadge.textContent = text;
+        debugBadge.style.color = isError ? '#fecaca' : '#bbf7d0';
+        debugBadge.style.borderColor = isError ? 'rgba(239,68,68,0.55)' : 'rgba(34,197,94,0.55)';
+        debugBadge.style.background = isError ? 'rgba(127,29,29,0.88)' : 'rgba(20,83,45,0.88)';
+      };
+      const recordInitError = (label, err) => {
+        const message = String((err && err.message) || err || 'unknown error');
+        if (!firstInitError) {
+          firstInitError = '[' + label + '] ' + message;
+          setDebug('UI Init Error: ' + firstInitError, true);
+        }
+        console.error('[dashboard]', label, err);
+      };
+      const guarded = (label, fn, fallback = null) => {
+        try {
+          return fn();
+        } catch (err) {
+          recordInitError(label, err);
+          return fallback;
+        }
+      };
+
+      const $ = (id) => guarded('getElementById:' + id, () => document.getElementById(id), null);
+      const bySelector = (selector) => guarded('querySelector:' + selector, () => document.querySelector(selector), null);
+      const bySelectorAll = (selector) => guarded('querySelectorAll:' + selector, () => Array.from(document.querySelectorAll(selector)), []);
       const firstEl = (...ids) => ids.map((id) => $(id)).find(Boolean) || null;
       const safeText = (id, text) => {
         const el = $(id);
@@ -828,15 +874,15 @@ function renderDashboardHtml() {
         return !!(el && 'checked' in el && el.checked);
       };
       const safeBind = (el, event, handler) => {
-        if (!el) return false;
+        if (!el || typeof el.addEventListener !== 'function') return false;
         el.addEventListener(event, (e) => {
           try {
             const maybePromise = handler(e);
             if (maybePromise && typeof maybePromise.catch === 'function') {
-              maybePromise.catch((err) => console.error('[dashboard] handler error:', err));
+              maybePromise.catch((err) => recordInitError('handler:' + event, err));
             }
           } catch (err) {
-            console.error('[dashboard] handler error:', err);
+            recordInitError('handler:' + event, err);
           }
         });
         return true;
@@ -851,6 +897,19 @@ function renderDashboardHtml() {
 
       function stageEl(index) {
         return bySelector('.stage[data-stage="' + index + '"]');
+      }
+      function normalizeOwnerRepo(raw) {
+        const text = String(raw || '').trim().replace(/^\/+|\/+$/g, '');
+        if (!text) return '';
+        const parts = text.split('/').filter(Boolean);
+        if (parts.length < 2) return text;
+        return parts[0] + '/' + parts[1].replace(/\.git$/, '');
+      }
+      function parseRepoUrl(repoUrl) {
+        const raw = String(repoUrl || '').trim();
+        if (!raw) return '';
+        const match = raw.match(/github\.com[:/](.+?)(?:\.git)?$/i);
+        return match ? normalizeOwnerRepo(match[1]) : '';
       }
       function getSourceState() {
         const mode = safeValue('input-source-mode', 'existing');
@@ -868,10 +927,10 @@ function renderDashboardHtml() {
         safeText('summary-stage-2', source.mode === 'new'
           ? 'New project' + (source.ownerRepo ? ' → ' + source.ownerRepo : '') + ' · ' + source.branch
           : (source.ownerRepo ? ('Existing repo: ' + source.ownerRepo + ' · ' + source.branch) : 'Existing repo not loaded.'));
-        safeText('summary-stage-3', ($( 'meta-generate') && $('meta-generate').textContent) || 'Code action: pending.');
-        safeText('summary-stage-4', ($( 'preview-summary') && $('preview-summary').textContent) || 'Preview: not rendered.');
-        safeText('summary-stage-5', ($( 'meta-github') && $('meta-github').textContent) || 'Push status: pending.');
-        const deployStatus = ($( 'badge-railway') && $('badge-railway').textContent) || 'idle';
+        safeText('summary-stage-3', (($('meta-generate') && $('meta-generate').textContent) || 'Code action: pending.'));
+        safeText('summary-stage-4', (($('preview-summary') && $('preview-summary').textContent) || 'Preview: not rendered.'));
+        safeText('summary-stage-5', (($('meta-github') && $('meta-github').textContent) || 'Push status: pending.'));
+        const deployStatus = (($('badge-railway') && $('badge-railway').textContent) || 'idle');
         safeText('summary-stage-6', 'Deploy status: ' + deployStatus + ' · ' + safeTrim('input-project') + '/' + safeTrim('input-service'));
         safeText('summary-stage-7', latestLiveUrl ? ('Live app: ' + latestLiveUrl) : 'Live app: not available.');
       }
@@ -888,10 +947,12 @@ function renderDashboardHtml() {
           : LEFT_STAGES.reduce((best, current) => (Math.abs(current - requested) < Math.abs(best - requested) ? current : best), LEFT_STAGES[0]);
         activeStage = fallback;
         bySelectorAll('.stage[data-stage]').forEach((el) => {
-          const idx = Number(el.dataset.stage);
+          const idx = Number(el && el.dataset ? el.dataset.stage : 0);
           const isActive = idx === activeStage;
-          el.classList.toggle('active', isActive);
-          el.classList.toggle('minimized', !isActive);
+          if (el && el.classList) {
+            el.classList.toggle('active', isActive);
+            el.classList.toggle('minimized', !isActive);
+          }
         });
         const taskInput = $('input-task');
         if (taskInput) taskInput.readOnly = activeStage !== 1;
@@ -974,19 +1035,6 @@ function renderDashboardHtml() {
         const text = String(sha || '').trim();
         return text ? text.slice(0, 7) : 'pending';
       }
-      function normalizeOwnerRepo(raw) {
-        const text = String(raw || '').trim().replace(/^\/+|\/+$/g, '');
-        if (!text) return '';
-        const parts = text.split('/').filter(Boolean);
-        if (parts.length < 2) return text;
-        return parts[0] + '/' + parts[1].replace(/\.git$/, '');
-      }
-      function parseRepoUrl(repoUrl) {
-        const raw = String(repoUrl || '').trim();
-        if (!raw) return '';
-        const match = raw.match(/github\.com[:/](.+?)(?:\.git)?$/i);
-        return match ? normalizeOwnerRepo(match[1]) : '';
-      }
       function setList(id, items) {
         const el = $(id);
         if (!el) return;
@@ -1010,8 +1058,8 @@ function renderDashboardHtml() {
         if (scanWorkspace) scanWorkspace.style.display = topLevelMode === 'scan' ? 'grid' : 'none';
         const buildBtn = firstEl('mode-build', 'btn-build');
         const scanBtn = firstEl('mode-scan', 'btn-scan-repository');
-        if (buildBtn) buildBtn.classList.toggle('active', topLevelMode === 'build');
-        if (scanBtn) scanBtn.classList.toggle('active', topLevelMode === 'scan');
+        if (buildBtn && buildBtn.classList) buildBtn.classList.toggle('active', topLevelMode === 'build');
+        if (scanBtn && scanBtn.classList) scanBtn.classList.toggle('active', topLevelMode === 'scan');
         const refreshBtn = firstEl('btn-refresh', 'btn-refresh-pipeline-status');
         if (refreshBtn) refreshBtn.disabled = topLevelMode === 'scan';
         setGlobalState('idle', topLevelMode === 'scan' ? 'Scan mode' : 'Idle');
@@ -1123,7 +1171,7 @@ function renderDashboardHtml() {
       async function refreshRouteAndDeployment() {
         const routeResult = await fetchJson('/route');
         setJson('json-route', routeResult.data);
-        const liveFromRoute = Array.isArray(routeResult.data.routes) && routeResult.data.routes[0]
+        const liveFromRoute = Array.isArray(routeResult.data && routeResult.data.routes) && routeResult.data.routes[0]
           ? 'http://' + routeResult.data.routes[0].domain
           : '';
 
@@ -1270,59 +1318,71 @@ function renderDashboardHtml() {
         if (latestLiveUrl) window.open(latestLiveUrl, '_blank', 'noopener');
       }
 
-      safeBind(firstEl('toggle-advanced'), 'change', () => {
+      guarded('bind:toggle-advanced', () => safeBind(firstEl('toggle-advanced'), 'change', () => {
         document.body.classList.toggle('show-advanced', safeChecked('toggle-advanced'));
-      });
-      safeBindFirst('click', () => setTopMode('build'), 'mode-build', 'btn-build');
-      safeBindFirst('click', () => setTopMode('scan'), 'mode-scan', 'btn-scan-repository');
-      safeBindFirst('click', startRepoScan, 'btn-start-scan', 'btn-scan-start');
-      safeBindFirst('click', runGenerate, 'btn-run', 'btn-generate');
-      safeBindFirst('click', renderPreview, 'btn-preview', 'btn-render-preview');
-      safeBindFirst('click', pullRepository, 'btn-pull', 'btn-pull-repository');
-      safeBindFirst('click', triggerDeployment, 'btn-trigger', 'btn-deploy-railway');
-      safeBindFirst('click', refreshAll, 'btn-refresh', 'btn-refresh-pipeline-status');
-      safeBindFirst('click', openLiveApp, 'btn-open', 'btn-open-live-app');
+      }));
+      guarded('bind:mode-build', () => safeBindFirst('click', () => setTopMode('build'), 'mode-build', 'btn-build'));
+      guarded('bind:mode-scan', () => safeBindFirst('click', () => setTopMode('scan'), 'mode-scan', 'btn-scan-repository'));
+      guarded('bind:start-scan', () => safeBindFirst('click', startRepoScan, 'btn-start-scan', 'btn-scan-start'));
+      guarded('bind:run-generate', () => safeBindFirst('click', runGenerate, 'btn-run', 'btn-generate'));
+      guarded('bind:render-preview', () => safeBindFirst('click', renderPreview, 'btn-preview', 'btn-render-preview'));
+      guarded('bind:pull-repository', () => safeBindFirst('click', pullRepository, 'btn-pull', 'btn-pull-repository'));
+      guarded('bind:trigger-deploy', () => safeBindFirst('click', triggerDeployment, 'btn-trigger', 'btn-deploy-railway'));
+      guarded('bind:refresh', () => safeBindFirst('click', refreshAll, 'btn-refresh', 'btn-refresh-pipeline-status'));
+      guarded('bind:open-live', () => safeBindFirst('click', openLiveApp, 'btn-open', 'btn-open-live-app'));
 
-      safeBind(firstEl('btn-continue-1'), 'click', () => {
+      guarded('bind:continue-1', () => safeBind(firstEl('btn-continue-1'), 'click', () => {
         setStageState('badge-request', 'success');
         markStageCompleted(1, true);
         continueStage(1);
-      });
-      safeBind(firstEl('btn-continue-2'), 'click', () => continueStage(2));
-      safeBind(firstEl('btn-continue-3'), 'click', () => continueStage(3));
-      safeBind(firstEl('btn-continue-5'), 'click', () => continueStage(5));
-      safeBind(firstEl('btn-continue-6'), 'click', () => continueStage(6));
-      safeBind(firstEl('btn-back-2'), 'click', () => backStage(2));
-      safeBind(firstEl('btn-back-3'), 'click', () => backStage(3));
-      safeBind(firstEl('btn-back-5'), 'click', () => backStage(5));
-      safeBind(firstEl('btn-back-6'), 'click', () => backStage(6));
+      }));
+      guarded('bind:continue-2', () => safeBind(firstEl('btn-continue-2'), 'click', () => continueStage(2)));
+      guarded('bind:continue-3', () => safeBind(firstEl('btn-continue-3'), 'click', () => continueStage(3)));
+      guarded('bind:continue-5', () => safeBind(firstEl('btn-continue-5'), 'click', () => continueStage(5)));
+      guarded('bind:continue-6', () => safeBind(firstEl('btn-continue-6'), 'click', () => continueStage(6)));
+      guarded('bind:back-2', () => safeBind(firstEl('btn-back-2'), 'click', () => backStage(2)));
+      guarded('bind:back-3', () => safeBind(firstEl('btn-back-3'), 'click', () => backStage(3)));
+      guarded('bind:back-5', () => safeBind(firstEl('btn-back-5'), 'click', () => backStage(5)));
+      guarded('bind:back-6', () => safeBind(firstEl('btn-back-6'), 'click', () => backStage(6)));
 
-      bySelectorAll('.btn-edit-stage').forEach((button) => {
-        safeBind(button, 'click', () => goToStage(Number(button.dataset.targetStage || 1)));
+      guarded('bind:edit-buttons', () => {
+        bySelectorAll('.btn-edit-stage').forEach((button) => {
+          safeBind(button, 'click', () => goToStage(Number((button && button.dataset && button.dataset.targetStage) || 1)));
+        });
       });
 
-      ['input-task', 'input-repo-url', 'input-owner-repo', 'input-source-branch', 'input-project', 'input-service', 'input-branch', 'input-commitSha']
-        .forEach((id) => {
+      guarded('bind:summary-inputs', () => {
+        ['input-task', 'input-repo-url', 'input-owner-repo', 'input-source-branch', 'input-project', 'input-service', 'input-branch', 'input-commitSha']
+          .forEach((id) => {
+            const el = $(id);
+            if (el) safeBind(el, 'input', updateStageSummaries);
+          });
+      });
+
+      guarded('bind:scan-inputs', () => {
+        ['scan-repo-url', 'scan-owner-repo', 'scan-branch'].forEach((id) => {
           const el = $(id);
-          if (el) safeBind(el, 'input', updateStageSummaries);
-        });
-
-      ['scan-repo-url', 'scan-owner-repo', 'scan-branch'].forEach((id) => {
-        const el = $(id);
-        if (!el) return;
-        safeBind(el, 'input', () => {
-          if (id !== 'scan-owner-repo') {
-            const ownerInput = $('scan-owner-repo');
-            if (ownerInput) ownerInput.value = getScanState().ownerRepo;
-          }
+          if (!el) return;
+          safeBind(el, 'input', () => {
+            if (id !== 'scan-owner-repo') {
+              const ownerInput = $('scan-owner-repo');
+              if (ownerInput) ownerInput.value = getScanState().ownerRepo;
+            }
+          });
         });
       });
 
-      safeBind(firstEl('input-source-mode'), 'change', updateStageSummaries);
+      guarded('bind:source-mode', () => safeBind(firstEl('input-source-mode'), 'change', updateStageSummaries));
 
-      if (stageEl(1)) goToStage(1);
-      setTopMode('build');
-      refreshAll().catch((err) => console.error('[dashboard] initial refresh failed:', err));
+      guarded('init:stage', () => {
+        if (stageEl(1)) goToStage(1);
+      });
+      guarded('init:mode', () => setTopMode('build'));
+      guarded('init:refresh', () => refreshAll().catch((err) => recordInitError('initial refresh', err)));
+
+      if (!firstInitError) {
+        setDebug('UI Ready', false);
+      }
     }
 
     if (document.readyState === 'loading') {
@@ -1331,6 +1391,7 @@ function renderDashboardHtml() {
       initDashboard();
     }
   </script>
+
 
 </body>
 </html>`;
