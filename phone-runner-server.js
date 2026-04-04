@@ -947,17 +947,23 @@ function renderDashboardHtml() {
         return 'Building ' + scope + ' on branch ' + branch + ': ' + task.slice(0, 180);
       }
       async function renderPreview() {
-        setStageState('badge-preview', 'running');
-        setGlobalState('running', 'Rendering preview');
-        const summary = buildPreviewSummary();
-        await new Promise((resolve) => setTimeout(resolve, 350));
-        const previewPayload = { generatedAt: new Date().toISOString(), summary, layout: 'mock-ui', status: 'preview_ready' };
-        safeText('preview-summary', summary);
-        setJson('json-preview', previewPayload);
-        setStageState('badge-preview', 'success');
-        setGlobalState('idle', 'Preview ready');
-        markStageCompleted(4, true);
-        updateStageSummaries();
+        const previewBtn = firstEl('btn-preview', 'btn-render-preview');
+        if (previewBtn) previewBtn.disabled = true;
+        try {
+          setStageState('badge-preview', 'running');
+          setGlobalState('running', 'Rendering preview');
+          const summary = buildPreviewSummary();
+          await new Promise((resolve) => setTimeout(resolve, 350));
+          const previewPayload = { generatedAt: new Date().toISOString(), summary, layout: 'mock-ui', status: 'preview_ready' };
+          safeText('preview-summary', summary);
+          setJson('json-preview', previewPayload);
+          setStageState('badge-preview', 'success');
+          setGlobalState('idle', 'Preview ready');
+          markStageCompleted(4, true);
+          updateStageSummaries();
+        } finally {
+          if (previewBtn) previewBtn.disabled = false;
+        }
       }
       async function fetchJson(url, options) {
         const res = await fetch(url, options);
@@ -1024,6 +1030,9 @@ function renderDashboardHtml() {
           setGlobalState('failed', 'Scan failed');
           return;
         }
+        const scanBtn = firstEl('btn-start-scan', 'btn-scan-start');
+        if (scanBtn) scanBtn.disabled = true;
+        try {
         setStageState('badge-scan', 'running');
         setGlobalState('running', 'Scanning repository');
         await new Promise((resolve) => setTimeout(resolve, 450));
@@ -1066,41 +1075,50 @@ function renderDashboardHtml() {
         setList('scan-recommendations', findings.recommendations);
         setStageState('badge-scan', 'success');
         setGlobalState('success', 'Scan complete');
+        } finally {
+          if (scanBtn) scanBtn.disabled = false;
+        }
       }
       async function pullRepository() {
-        setStageState('badge-source', 'running');
-        setGlobalState('running', 'Loading GitHub source');
-        const source = getSourceState();
-        if (!source.ownerRepo && source.mode === 'existing') {
-          const err = { error: 'Owner/repo is required for Existing Repo mode.' };
-          setJson('json-source', err);
-          safeText('meta-source', err.error);
-          setStageState('badge-source', 'failed');
-          setGlobalState('failed', 'Source load failed');
-          updateStageSummaries();
-          return;
-        }
+        const pullBtn = firstEl('btn-pull', 'btn-pull-repository');
+        if (pullBtn) pullBtn.disabled = true;
+        try {
+          setStageState('badge-source', 'running');
+          setGlobalState('running', 'Loading GitHub source');
+          const source = getSourceState();
+          if (!source.ownerRepo && source.mode === 'existing') {
+            const err = { error: 'Owner/repo is required for Existing Repo mode.' };
+            setJson('json-source', err);
+            safeText('meta-source', err.error);
+            setStageState('badge-source', 'failed');
+            setGlobalState('failed', 'Source load failed');
+            updateStageSummaries();
+            return;
+          }
 
-        const details = {
-          loaded: true,
-          mode: source.mode,
-          repositoryUrl: source.repoUrl || null,
-          ownerRepo: source.ownerRepo || null,
-          branch: source.branch,
-          sourceStatus: source.mode === 'new' ? 'new_project_ready' : 'repository_loaded',
-        };
-        setJson('json-source', details);
-        const ownerInput = $('input-owner-repo');
-        const branchInput = $('input-branch');
-        if (ownerInput) ownerInput.value = source.ownerRepo;
-        if (branchInput) branchInput.value = source.branch;
-        safeText('meta-source', source.mode === 'new'
-          ? 'New Project ready' + (source.ownerRepo ? ' · Target: ' + source.ownerRepo : '') + ' · Branch: ' + source.branch
-          : 'Loaded: ' + source.ownerRepo + ' · Branch: ' + source.branch);
-        setStageState('badge-source', 'success');
-        setGlobalState('idle', 'Source ready');
-        markStageCompleted(2, true);
-        updateStageSummaries();
+          const details = {
+            loaded: true,
+            mode: source.mode,
+            repositoryUrl: source.repoUrl || null,
+            ownerRepo: source.ownerRepo || null,
+            branch: source.branch,
+            sourceStatus: source.mode === 'new' ? 'new_project_ready' : 'repository_loaded',
+          };
+          setJson('json-source', details);
+          const ownerInput = $('input-owner-repo');
+          const branchInput = $('input-branch');
+          if (ownerInput) ownerInput.value = source.ownerRepo;
+          if (branchInput) branchInput.value = source.branch;
+          safeText('meta-source', source.mode === 'new'
+            ? 'New Project ready' + (source.ownerRepo ? ' · Target: ' + source.ownerRepo : '') + ' · Branch: ' + source.branch
+            : 'Loaded: ' + source.ownerRepo + ' · Branch: ' + source.branch);
+          setStageState('badge-source', 'success');
+          setGlobalState('idle', 'Source ready');
+          markStageCompleted(2, true);
+          updateStageSummaries();
+        } finally {
+          if (pullBtn) pullBtn.disabled = false;
+        }
       }
       async function refreshRouteAndDeployment() {
         const routeResult = await fetchJson('/route');
@@ -1122,74 +1140,80 @@ function renderDashboardHtml() {
         updateStageSummaries();
       }
       async function runGenerate() {
-        setStageState('badge-request', 'success');
-        const source = getSourceState();
-        if (!source.ownerRepo && source.mode === 'existing') {
-          setJson('json-source', { error: 'Load an existing repository in GitHub Source before generating.' });
-          safeText('meta-source', 'Source: existing repo not loaded');
-          setStageState('badge-source', 'failed');
-          setStageState('badge-generate', 'failed');
-          setGlobalState('failed', 'Flow failed');
-          updateStageSummaries();
-          return;
-        }
-        if (source.ownerRepo || source.repoUrl || source.mode === 'new') setStageState('badge-source', 'success');
-
-        setStageState('badge-generate', 'running');
-        setStageState('badge-preview', 'idle');
-        setStageState('badge-push', 'idle');
-        setStageState('badge-live', 'idle');
-        setGlobalState('running', 'Flow running');
-
-        const payload = { task: safeTrim('input-task') || 'Echo a short status update and exit.' };
+        const runBtn = firstEl('btn-run', 'btn-generate');
+        if (runBtn) runBtn.disabled = true;
         try {
-          const result = await fetchJson('/run', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          setJson('json-generate', result.data);
-          if (!result.ok || !result.data || result.data.success === false) {
+          setStageState('badge-request', 'success');
+          const source = getSourceState();
+          if (!source.ownerRepo && source.mode === 'existing') {
+            setJson('json-source', { error: 'Load an existing repository in GitHub Source before generating.' });
+            safeText('meta-source', 'Source: existing repo not loaded');
+            setStageState('badge-source', 'failed');
             setStageState('badge-generate', 'failed');
-            setStageState('badge-push', 'failed');
             setGlobalState('failed', 'Flow failed');
             updateStageSummaries();
             return;
           }
-          setStageState('badge-generate', 'success');
-          const branch = String(result.data.branch || source.branch || safeValue('input-branch', 'main') || 'main');
-          const branchInput = $('input-branch');
-          if (branchInput) branchInput.value = branch;
-          const commitSha = safeTrim('input-commitSha');
-          const displayRepo = source.ownerRepo || (location.hostname || 'local');
-          safeText('meta-generate', 'Repo: ' + displayRepo + ' · Branch: ' + branch);
+          if (source.ownerRepo || source.repoUrl || source.mode === 'new') setStageState('badge-source', 'success');
 
-          const githubData = {
-            repo: displayRepo || 'local-repo',
-            branch,
-            commit: commitSha,
-            commitMessage: result.data.commit_message || 'Generated by RW pipeline',
-            status: 'pushed',
-          };
-          setJson('json-github', githubData);
-          safeText('preview-summary', buildPreviewSummary());
-          setJson('json-preview', {
-            generatedAt: new Date().toISOString(),
-            status: 'pending_render',
-            summary: buildPreviewSummary(),
-          });
-          safeText('meta-github', 'Branch: ' + branch + ' · Commit: ' + shortCommit(commitSha));
-          setStageState('badge-push', 'success');
-          setGlobalState('running', 'Ready to preview and deploy');
-          markStageCompleted(3, true);
-          markStageCompleted(5, true);
-          updateStageSummaries();
-        } catch (err) {
-          setJson('json-generate', { error: String((err && err.message) || err) });
-          setStageState('badge-generate', 'failed');
-          setStageState('badge-push', 'failed');
-          setGlobalState('failed', 'Flow failed');
-          updateStageSummaries();
+          setStageState('badge-generate', 'running');
+          setStageState('badge-preview', 'idle');
+          setStageState('badge-push', 'idle');
+          setStageState('badge-live', 'idle');
+          setGlobalState('running', 'Flow running');
+
+          const payload = { task: safeTrim('input-task') || 'Echo a short status update and exit.' };
+          try {
+            const result = await fetchJson('/run', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            setJson('json-generate', result.data);
+            if (!result.ok || !result.data || result.data.success === false) {
+              setStageState('badge-generate', 'failed');
+              setStageState('badge-push', 'failed');
+              setGlobalState('failed', 'Flow failed');
+              updateStageSummaries();
+              return;
+            }
+            setStageState('badge-generate', 'success');
+            const branch = String(result.data.branch || source.branch || safeValue('input-branch', 'main') || 'main');
+            const branchInput = $('input-branch');
+            if (branchInput) branchInput.value = branch;
+            const commitSha = safeTrim('input-commitSha');
+            const displayRepo = source.ownerRepo || (location.hostname || 'local');
+            safeText('meta-generate', 'Repo: ' + displayRepo + ' · Branch: ' + branch);
+
+            const githubData = {
+              repo: displayRepo || 'local-repo',
+              branch,
+              commit: commitSha,
+              commitMessage: result.data.commit_message || 'Generated by RW pipeline',
+              status: 'pushed',
+            };
+            setJson('json-github', githubData);
+            safeText('preview-summary', buildPreviewSummary());
+            setJson('json-preview', {
+              generatedAt: new Date().toISOString(),
+              status: 'pending_render',
+              summary: buildPreviewSummary(),
+            });
+            safeText('meta-github', 'Branch: ' + branch + ' · Commit: ' + shortCommit(commitSha));
+            setStageState('badge-push', 'success');
+            setGlobalState('running', 'Ready to preview and deploy');
+            markStageCompleted(3, true);
+            markStageCompleted(5, true);
+            updateStageSummaries();
+          } catch (err) {
+            setJson('json-generate', { error: String((err && err.message) || err) });
+            setStageState('badge-generate', 'failed');
+            setStageState('badge-push', 'failed');
+            setGlobalState('failed', 'Flow failed');
+            updateStageSummaries();
+          }
+        } finally {
+          if (runBtn) runBtn.disabled = false;
         }
       }
       async function triggerDeployment() {
