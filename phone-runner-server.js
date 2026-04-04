@@ -280,40 +280,42 @@ function renderDashboardHtml() {
     }
     .pipeline {
       display: grid;
-      grid-template-columns: repeat(7, minmax(210px, 1fr));
       gap: 10px;
-      overflow-x: auto;
       padding-bottom: 6px;
     }
     .stage {
       background: linear-gradient(180deg, #13223d 0%, var(--panel-2) 100%);
       border: 1px solid var(--panel-border);
       border-radius: 12px;
-      min-height: 340px;
+      min-height: 120px;
       display: grid;
-      grid-template-rows: auto auto 1fr auto;
+      grid-template-rows: auto auto auto;
       gap: 10px;
       padding: 12px;
       position: relative;
       box-shadow: 0 8px 22px rgba(0,0,0,0.2);
     }
-    .stage:not(:last-child)::after {
-      content: '→';
-      position: absolute;
-      right: -9px;
-      top: 50%;
-      transform: translateY(-50%);
-      width: 18px;
-      height: 18px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 999px;
-      color: #bfdbfe;
-      background: #182845;
-      border: 1px solid #2c4672;
-      font-size: 12px;
-      z-index: 2;
+    .stage.active {
+      min-height: 330px;
+      border-color: #3a5ea8;
+      box-shadow: 0 14px 32px rgba(37, 99, 235, 0.22);
+    }
+    .stage.minimized .stage-content,
+    .stage.minimized .stage-nav {
+      display: none;
+    }
+    .stage.active .stage-summary {
+      display: none;
+    }
+    .stage-summary {
+      border: 1px solid #2f4f80;
+      border-radius: 10px;
+      padding: 8px;
+      background: #0a162c;
+      color: #d8e8ff;
+      font-size: 0.82rem;
+      line-height: 1.35;
+      min-height: 44px;
     }
     .stage-title {
       margin: 0;
@@ -431,12 +433,6 @@ function renderDashboardHtml() {
       display: flex;
       align-items: center;
     }
-    .preview-stage {
-      grid-column: span 2;
-      min-height: 420px;
-      border-color: #3a5ea8;
-      box-shadow: 0 14px 32px rgba(37, 99, 235, 0.22);
-    }
     .preview-board {
       border: 1px solid #355386;
       border-radius: 10px;
@@ -495,6 +491,23 @@ function renderDashboardHtml() {
     body.show-advanced .advanced-json {
       display: block;
     }
+    .stage-header-actions {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .stage-nav {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      align-items: center;
+      margin-top: auto;
+    }
+    .stage-content {
+      display: grid;
+      gap: 10px;
+    }
   </style>
 </head>
 <body>
@@ -507,117 +520,157 @@ function renderDashboardHtml() {
       <label class="toggle-wrap"><input id="toggle-advanced" type="checkbox" /> Advanced (show raw JSON)</label>
     </div>
     <section class="pipeline">
-      <article class="stage">
-        <h2 class="stage-title">Describe Request <span class="stage-num">Stage 1</span></h2>
-        <span id="badge-request" class="badge idle">idle</span>
+      <article class="stage active" data-stage="1">
+        <h2 class="stage-title">Describe Request <span class="stage-num">Stage 1</span><span class="stage-header-actions"><span id="badge-request" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="1" style="display:none;">Edit</button></span></h2>
         <p class="meta">Tell RW what you want built or changed.</p>
-        <div class="form">
-          <label>Build request
-            <textarea id="input-task">Build a minimal app and return deploy status.</textarea>
-          </label>
-        </div>
-      </article>
-      <article class="stage">
-        <h2 class="stage-title">GitHub Source <span class="stage-num">Stage 2</span></h2>
-        <span id="badge-source" class="badge idle">idle</span>
-        <p class="meta">Choose New Project or Existing Repo, then connect or load GitHub code.</p>
-        <div class="form">
-          <label>Mode
-            <select id="input-source-mode">
-              <option value="new">New Project</option>
-              <option value="existing">Existing Repo</option>
-            </select>
-          </label>
-          <label>Repository URL
-            <input id="input-repo-url" placeholder="https://github.com/owner/repo.git" />
-          </label>
-          <label>Owner / Repo
-            <input id="input-owner-repo" placeholder="owner/repo" />
-          </label>
-          <label>Branch
-            <input id="input-source-branch" value="main" />
-          </label>
-        </div>
-        <pre id="json-source" class="advanced-json">{}</pre>
-        <div class="meta" id="meta-source">Source: not loaded</div>
-        <div class="actions">
-          <button id="btn-pull">Pull Repository</button>
-        </div>
-      </article>
-      <article class="stage">
-        <h2 class="stage-title">Generate / Modify Code <span class="stage-num">Stage 3</span></h2>
-        <span id="badge-generate" class="badge idle">idle</span>
-        <p class="meta">Run RW generation for new projects or modifications for loaded repositories.</p>
-        <pre id="json-generate" class="advanced-json">{}</pre>
-        <div class="meta" id="meta-generate">Repo: pending</div>
-        <div class="actions">
-          <button id="btn-run">Generate / Modify Code</button>
-        </div>
-      </article>
-      <article class="stage preview-stage">
-        <h2 class="stage-title">Preview <span class="stage-num">Stage 4</span></h2>
-        <span id="badge-preview" class="badge idle">idle</span>
-        <p class="meta">Generate a visual preview before pushing code to GitHub.</p>
-        <div class="preview-board">
-          <div class="preview-header"></div>
-          <div class="preview-blocks">
-            <div class="preview-card">
-              <div class="preview-line"></div>
-              <div class="preview-line" style="width:82%"></div>
-              <div class="preview-line" style="width:66%"></div>
-              <div class="preview-line" style="width:54%"></div>
-            </div>
-            <div class="preview-sidebar">
-              <div class="preview-line"></div>
-              <div class="preview-line" style="width:76%"></div>
-              <div class="preview-line" style="width:62%"></div>
-            </div>
+        <div class="stage-summary" id="summary-stage-1">No request entered yet.</div>
+        <div class="stage-content">
+          <div class="form">
+            <label>Build request
+              <textarea id="input-task">Build a minimal app and return deploy status.</textarea>
+            </label>
           </div>
         </div>
-        <div id="preview-summary" class="preview-summary">Preview summary will appear after generation.</div>
-        <pre id="json-preview" class="advanced-json">{}</pre>
-        <div class="actions">
-          <button id="btn-preview">Render Preview</button>
+        <div class="stage-nav">
+          <button id="btn-continue-1">Continue</button>
         </div>
       </article>
-      <article class="stage">
-        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 5</span></h2>
-        <span id="badge-push" class="badge idle">idle</span>
+      <article class="stage minimized" data-stage="2">
+        <h2 class="stage-title">GitHub Source <span class="stage-num">Stage 2</span><span class="stage-header-actions"><span id="badge-source" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="2">Edit</button></span></h2>
+        <p class="meta">Choose New Project or Existing Repo, then connect or load GitHub code.</p>
+        <div class="stage-summary" id="summary-stage-2">Source: not loaded.</div>
+        <div class="stage-content">
+          <div class="form">
+            <label>Mode
+              <select id="input-source-mode">
+                <option value="new">New Project</option>
+                <option value="existing">Existing Repo</option>
+              </select>
+            </label>
+            <label>Repository URL
+              <input id="input-repo-url" placeholder="https://github.com/owner/repo.git" />
+            </label>
+            <label>Owner / Repo
+              <input id="input-owner-repo" placeholder="owner/repo" />
+            </label>
+            <label>Branch
+              <input id="input-source-branch" value="main" />
+            </label>
+          </div>
+          <pre id="json-source" class="advanced-json">{}</pre>
+          <div class="meta" id="meta-source">Source: not loaded</div>
+          <div class="actions">
+            <button id="btn-pull">Pull Repository</button>
+          </div>
+        </div>
+        <div class="stage-nav">
+          <button id="btn-back-2" class="secondary">Back</button>
+          <button id="btn-continue-2">Continue</button>
+        </div>
+      </article>
+      <article class="stage minimized" data-stage="3">
+        <h2 class="stage-title">Generate / Modify Code <span class="stage-num">Stage 3</span><span class="stage-header-actions"><span id="badge-generate" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="3">Edit</button></span></h2>
+        <p class="meta">Run RW generation for new projects or modifications for loaded repositories.</p>
+        <div class="stage-summary" id="summary-stage-3">Code action: pending.</div>
+        <div class="stage-content">
+          <pre id="json-generate" class="advanced-json">{}</pre>
+          <div class="meta" id="meta-generate">Repo: pending</div>
+          <div class="actions">
+            <button id="btn-run">Generate / Modify Code</button>
+          </div>
+        </div>
+        <div class="stage-nav">
+          <button id="btn-back-3" class="secondary">Back</button>
+          <button id="btn-continue-3">Continue</button>
+        </div>
+      </article>
+      <article class="stage minimized" data-stage="4">
+        <h2 class="stage-title">Preview <span class="stage-num">Stage 4</span><span class="stage-header-actions"><span id="badge-preview" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="4">Edit</button></span></h2>
+        <p class="meta">Generate a visual preview before pushing code to GitHub.</p>
+        <div class="stage-summary" id="summary-stage-4">Preview: not rendered.</div>
+        <div class="stage-content">
+          <div class="preview-board">
+            <div class="preview-header"></div>
+            <div class="preview-blocks">
+              <div class="preview-card">
+                <div class="preview-line"></div>
+                <div class="preview-line" style="width:82%"></div>
+                <div class="preview-line" style="width:66%"></div>
+                <div class="preview-line" style="width:54%"></div>
+              </div>
+              <div class="preview-sidebar">
+                <div class="preview-line"></div>
+                <div class="preview-line" style="width:76%"></div>
+                <div class="preview-line" style="width:62%"></div>
+              </div>
+            </div>
+          </div>
+          <div id="preview-summary" class="preview-summary">Preview summary will appear after generation.</div>
+          <pre id="json-preview" class="advanced-json">{}</pre>
+          <div class="actions">
+            <button id="btn-preview">Render Preview</button>
+          </div>
+        </div>
+        <div class="stage-nav">
+          <button id="btn-back-4" class="secondary">Back</button>
+          <button id="btn-continue-4">Continue</button>
+        </div>
+      </article>
+      <article class="stage minimized" data-stage="5">
+        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 5</span><span class="stage-header-actions"><span id="badge-push" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="5">Edit</button></span></h2>
         <p class="meta">Simulated push details from branch and commit SHA.</p>
-        <pre id="json-github" class="advanced-json">{}</pre>
-        <div class="meta" id="meta-github">Branch: pending · Commit: pending</div>
+        <div class="stage-summary" id="summary-stage-5">Push status: pending.</div>
+        <div class="stage-content">
+          <pre id="json-github" class="advanced-json">{}</pre>
+          <div class="meta" id="meta-github">Branch: pending · Commit: pending</div>
+        </div>
+        <div class="stage-nav">
+          <button id="btn-back-5" class="secondary">Back</button>
+          <button id="btn-continue-5">Continue</button>
+        </div>
       </article>
-      <article class="stage">
-        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 6</span></h2>
-        <span id="badge-railway" class="badge idle">idle</span>
+      <article class="stage minimized" data-stage="6">
+        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 6</span><span class="stage-header-actions"><span id="badge-railway" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="6">Edit</button></span></h2>
         <p class="meta">Uses existing deployment trigger and status logic.</p>
-        <div class="form dual">
-          <label>Project
-            <input id="input-project" value="demo-project" />
-          </label>
-          <label>Service
-            <input id="input-service" value="phone-runner" />
-          </label>
-          <label>Branch
-            <input id="input-branch" value="main" />
-          </label>
-          <label>Commit SHA
-            <input id="input-commitSha" value="0000000000000000000000000000000000000000" />
-          </label>
+        <div class="stage-summary" id="summary-stage-6">Deploy status: pending.</div>
+        <div class="stage-content">
+          <div class="form dual">
+            <label>Project
+              <input id="input-project" value="demo-project" />
+            </label>
+            <label>Service
+              <input id="input-service" value="phone-runner" />
+            </label>
+            <label>Branch
+              <input id="input-branch" value="main" />
+            </label>
+            <label>Commit SHA
+              <input id="input-commitSha" value="0000000000000000000000000000000000000000" />
+            </label>
+          </div>
+          <pre id="json-deployment" class="advanced-json">{}</pre>
+          <div class="actions">
+            <button id="btn-trigger">Deploy on Railway</button>
+          </div>
         </div>
-        <pre id="json-deployment" class="advanced-json">{}</pre>
-        <div class="actions">
-          <button id="btn-trigger">Deploy on Railway</button>
+        <div class="stage-nav">
+          <button id="btn-back-6" class="secondary">Back</button>
+          <button id="btn-continue-6">Continue</button>
         </div>
       </article>
-      <article class="stage">
-        <h2 class="stage-title">Live App <span class="stage-num">Stage 7</span></h2>
-        <span id="badge-live" class="badge idle">idle</span>
+      <article class="stage minimized" data-stage="7">
+        <h2 class="stage-title">Live App <span class="stage-num">Stage 7</span><span class="stage-header-actions"><span id="badge-live" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="7">Edit</button></span></h2>
         <p class="meta">Final URL from the latest successful deployment.</p>
-        <div id="live-url" class="url-box">No live URL yet.</div>
-        <pre id="json-route" class="advanced-json">{}</pre>
-        <div class="actions">
-          <button id="btn-open" class="secondary" disabled>Open Live App</button>
+        <div class="stage-summary" id="summary-stage-7">Live app: not available.</div>
+        <div class="stage-content">
+          <div id="live-url" class="url-box">No live URL yet.</div>
+          <pre id="json-route" class="advanced-json">{}</pre>
+          <div class="actions">
+            <button id="btn-open" class="secondary" disabled>Open Live App</button>
+          </div>
+        </div>
+        <div class="stage-nav">
+          <button id="btn-back-7" class="secondary">Back</button>
         </div>
       </article>
     </section>
@@ -625,6 +678,50 @@ function renderDashboardHtml() {
   <script>
     const $ = (id) => document.getElementById(id);
     let latestLiveUrl = '';
+    let activeStage = 1;
+    const completedStages = new Set();
+
+    function stageEl(index) {
+      return document.querySelector('.stage[data-stage=\"' + index + '\"]');
+    }
+    function updateStageSummaries() {
+      const task = $('input-task').value.trim();
+      $('summary-stage-1').textContent = task ? ('Request: ' + task.slice(0, 120)) : 'No request entered yet.';
+      const source = getSourceState();
+      $('summary-stage-2').textContent = source.mode === 'new'
+        ? 'New project' + (source.ownerRepo ? ' → ' + source.ownerRepo : '') + ' · ' + source.branch
+        : (source.ownerRepo ? ('Existing repo: ' + source.ownerRepo + ' · ' + source.branch) : 'Existing repo not loaded.');
+      $('summary-stage-3').textContent = $('meta-generate').textContent || 'Code action: pending.';
+      $('summary-stage-4').textContent = $('preview-summary').textContent || 'Preview: not rendered.';
+      $('summary-stage-5').textContent = $('meta-github').textContent || 'Push status: pending.';
+      const deployStatus = $('badge-railway').textContent;
+      $('summary-stage-6').textContent = 'Deploy status: ' + deployStatus + ' · ' + $('input-project').value.trim() + '/' + $('input-service').value.trim();
+      $('summary-stage-7').textContent = latestLiveUrl ? ('Live app: ' + latestLiveUrl) : 'Live app: not available.';
+    }
+    function markStageCompleted(index, done = true) {
+      if (done) completedStages.add(index);
+      else completedStages.delete(index);
+      const editBtn = document.querySelector('.btn-edit-stage[data-target-stage=\"' + index + '\"]');
+      if (editBtn) editBtn.style.display = completedStages.has(index) ? '' : 'none';
+    }
+    function goToStage(index) {
+      activeStage = Math.max(1, Math.min(7, index));
+      document.querySelectorAll('.stage[data-stage]').forEach((el) => {
+        const idx = Number(el.dataset.stage);
+        const isActive = idx === activeStage;
+        el.classList.toggle('active', isActive);
+        el.classList.toggle('minimized', !isActive);
+      });
+      $('input-task').readOnly = activeStage !== 1;
+      updateStageSummaries();
+    }
+    function continueStage(index) {
+      markStageCompleted(index, true);
+      goToStage(index + 1);
+    }
+    function backStage(index) {
+      goToStage(index - 1);
+    }
 
     function pretty(value) {
       return JSON.stringify(value ?? null, null, 2);
@@ -651,6 +748,7 @@ function renderDashboardHtml() {
       $('live-url').textContent = latestLiveUrl || 'No live URL yet.';
       $('btn-open').disabled = !latestLiveUrl;
       setStageState('badge-live', latestLiveUrl ? 'success' : 'idle');
+      updateStageSummaries();
     }
     function buildPreviewSummary() {
       const task = $('input-task').value.trim();
@@ -677,6 +775,8 @@ function renderDashboardHtml() {
       setJson('json-preview', previewPayload);
       setStageState('badge-preview', 'success');
       setGlobalState('idle', 'Preview ready');
+      markStageCompleted(4, true);
+      updateStageSummaries();
     }
     async function fetchJson(url, options) {
       const res = await fetch(url, options);
@@ -719,6 +819,7 @@ function renderDashboardHtml() {
         $('meta-source').textContent = err.error;
         setStageState('badge-source', 'failed');
         setGlobalState('failed', 'Source load failed');
+        updateStageSummaries();
         return;
       }
 
@@ -738,6 +839,8 @@ function renderDashboardHtml() {
         : 'Loaded: ' + source.ownerRepo + ' · Branch: ' + source.branch;
       setStageState('badge-source', 'success');
       setGlobalState('idle', 'Source ready');
+      markStageCompleted(2, true);
+      updateStageSummaries();
     }
     async function refreshRouteAndDeployment() {
       const routeResult = await fetchJson('/route');
@@ -760,6 +863,7 @@ function renderDashboardHtml() {
         setStageState('badge-railway', 'idle');
       }
       setLiveUrl(dep.url || liveFromRoute || '');
+      updateStageSummaries();
     }
     async function runGenerate() {
       setStageState('badge-request', 'success');
@@ -770,6 +874,7 @@ function renderDashboardHtml() {
         setStageState('badge-source', 'failed');
         setStageState('badge-generate', 'failed');
         setGlobalState('failed', 'Flow failed');
+        updateStageSummaries();
         return;
       }
       if (source.ownerRepo || source.repoUrl || source.mode === 'new') {
@@ -793,6 +898,7 @@ function renderDashboardHtml() {
           setStageState('badge-generate', 'failed');
           setStageState('badge-push', 'failed');
           setGlobalState('failed', 'Flow failed');
+          updateStageSummaries();
           return;
         }
         setStageState('badge-generate', 'success');
@@ -819,11 +925,15 @@ function renderDashboardHtml() {
         $('meta-github').textContent = 'Branch: ' + branch + ' · Commit: ' + shortCommit(commitSha);
         setStageState('badge-push', 'success');
         setGlobalState('running', 'Ready to preview and deploy');
+        markStageCompleted(3, true);
+        markStageCompleted(5, true);
+        updateStageSummaries();
       } catch (err) {
         setJson('json-generate', { error: String(err && err.message || err) });
         setStageState('badge-generate', 'failed');
         setStageState('badge-push', 'failed');
         setGlobalState('failed', 'Flow failed');
+        updateStageSummaries();
       }
     }
     async function triggerDeployment() {
@@ -847,10 +957,14 @@ function renderDashboardHtml() {
         setStageState('badge-railway', result.ok ? 'success' : 'failed');
         await refreshRouteAndDeployment();
         setGlobalState(result.ok ? 'success' : 'failed', result.ok ? 'Pipeline ready' : 'Deploy failed');
+        markStageCompleted(6, !!result.ok);
+        markStageCompleted(7, !!result.ok && !!latestLiveUrl);
+        updateStageSummaries();
       } catch (err) {
         setJson('json-deployment', { error: String(err && err.message || err) });
         setStageState('badge-railway', 'failed');
         setGlobalState('failed', 'Deploy failed');
+        updateStageSummaries();
       } finally {
         button.disabled = false;
       }
@@ -863,9 +977,11 @@ function renderDashboardHtml() {
         const worker = !!(health.data && health.data.workerConfigured);
         if (!worker) setStageState('badge-request', 'idle');
         setGlobalState('idle', 'Idle');
+        updateStageSummaries();
       } catch (err) {
         setJson('json-github', { error: String(err && err.message || err) });
         setGlobalState('failed', 'Refresh failed');
+        updateStageSummaries();
       }
     }
     function openLiveApp() {
@@ -881,6 +997,33 @@ function renderDashboardHtml() {
     $('btn-trigger').addEventListener('click', triggerDeployment);
     $('btn-refresh').addEventListener('click', refreshAll);
     $('btn-open').addEventListener('click', openLiveApp);
+    $('btn-continue-1').addEventListener('click', () => {
+      setStageState('badge-request', 'success');
+      markStageCompleted(1, true);
+      continueStage(1);
+    });
+    $('btn-continue-2').addEventListener('click', () => continueStage(2));
+    $('btn-continue-3').addEventListener('click', () => continueStage(3));
+    $('btn-continue-4').addEventListener('click', () => continueStage(4));
+    $('btn-continue-5').addEventListener('click', () => continueStage(5));
+    $('btn-continue-6').addEventListener('click', () => continueStage(6));
+    $('btn-back-2').addEventListener('click', () => backStage(2));
+    $('btn-back-3').addEventListener('click', () => backStage(3));
+    $('btn-back-4').addEventListener('click', () => backStage(4));
+    $('btn-back-5').addEventListener('click', () => backStage(5));
+    $('btn-back-6').addEventListener('click', () => backStage(6));
+    $('btn-back-7').addEventListener('click', () => backStage(7));
+    document.querySelectorAll('.btn-edit-stage').forEach((button) => {
+      button.addEventListener('click', () => {
+        goToStage(Number(button.dataset.targetStage || 1));
+      });
+    });
+    ['input-task', 'input-repo-url', 'input-owner-repo', 'input-source-branch', 'input-project', 'input-service', 'input-branch', 'input-commitSha'].forEach((id) => {
+      const el = $(id);
+      if (el) el.addEventListener('input', updateStageSummaries);
+    });
+    $('input-source-mode').addEventListener('change', updateStageSummaries);
+    goToStage(1);
     refreshAll();
   </script>
 </body>
