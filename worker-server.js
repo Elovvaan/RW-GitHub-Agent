@@ -2,6 +2,7 @@
 
 const http = require('http');
 const net = require('net');
+const path = require('path');
 const { URL } = require('url');
 const { execFile, spawn } = require('child_process');
 
@@ -20,9 +21,20 @@ function sendText(res, code, text) {
   res.end(text);
 }
 
+function normalizeCommand(command) {
+  const candidate = String(command || '').trim();
+  const base = path.basename(candidate).toLowerCase();
+
+  if (!candidate || base === 'node' || base === 'node.exe') {
+    return process.execPath;
+  }
+
+  return candidate;
+}
+
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const executable = command === 'node' ? process.execPath : command;
+    const executable = normalizeCommand(command);
     execFile(executable, args, { cwd: options.cwd || process.cwd(), maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) {
         const err = new Error((stderr || stdout || error.message || 'command_failed').trim());
@@ -34,6 +46,10 @@ function runCommand(command, args, options = {}) {
       resolve({ stdout: String(stdout || ''), stderr: String(stderr || '') });
     });
   });
+}
+
+function spawnCommand(command, args, options = {}) {
+  return spawn(normalizeCommand(command), args, options);
 }
 
 function requireBearerAuth(req, res) {
@@ -246,7 +262,7 @@ const server = http.createServer((req, res) => {
         Connection: 'keep-alive',
       });
 
-      const child = spawn('docker', ['logs', '--timestamps', '--tail', String(tail), '-f', containerId]);
+      const child = spawnCommand('docker', ['logs', '--timestamps', '--tail', String(tail), '-f', containerId]);
       child.stdout.on('data', (chunk) => res.write(chunk));
       child.stderr.on('data', (chunk) => res.write(chunk));
 
