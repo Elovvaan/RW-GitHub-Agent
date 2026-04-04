@@ -808,463 +808,512 @@ function renderDashboardHtml() {
     </section>
   </div>
   <script>
-    const $ = (id) => document.getElementById(id);
-    let latestLiveUrl = '';
-    let activeStage = 1;
-    let topLevelMode = 'build';
-    const LEFT_STAGES = [1, 2, 3, 5, 6];
-    const completedStages = new Set();
-
-    function stageEl(index) {
-      return document.querySelector('.stage[data-stage=\"' + index + '\"]');
-    }
-    function updateStageSummaries() {
-      const task = $('input-task').value.trim();
-      $('summary-stage-1').textContent = task ? ('Request: ' + task.slice(0, 120)) : 'No request entered yet.';
-      const source = getSourceState();
-      $('summary-stage-2').textContent = source.mode === 'new'
-        ? 'New project' + (source.ownerRepo ? ' → ' + source.ownerRepo : '') + ' · ' + source.branch
-        : (source.ownerRepo ? ('Existing repo: ' + source.ownerRepo + ' · ' + source.branch) : 'Existing repo not loaded.');
-      $('summary-stage-3').textContent = $('meta-generate').textContent || 'Code action: pending.';
-      $('summary-stage-4').textContent = $('preview-summary').textContent || 'Preview: not rendered.';
-      $('summary-stage-5').textContent = $('meta-github').textContent || 'Push status: pending.';
-      const deployStatus = $('badge-railway').textContent;
-      $('summary-stage-6').textContent = 'Deploy status: ' + deployStatus + ' · ' + $('input-project').value.trim() + '/' + $('input-service').value.trim();
-      $('summary-stage-7').textContent = latestLiveUrl ? ('Live app: ' + latestLiveUrl) : 'Live app: not available.';
-    }
-    function markStageCompleted(index, done = true) {
-      if (done) completedStages.add(index);
-      else completedStages.delete(index);
-      const editBtn = document.querySelector('.btn-edit-stage[data-target-stage=\"' + index + '\"]');
-      if (editBtn) editBtn.style.display = completedStages.has(index) ? '' : 'none';
-    }
-    function goToStage(index) {
-      const requested = Math.max(1, Math.min(6, index));
-      const fallback = LEFT_STAGES.includes(requested)
-        ? requested
-        : LEFT_STAGES.reduce((best, current) => (Math.abs(current - requested) < Math.abs(best - requested) ? current : best), LEFT_STAGES[0]);
-      activeStage = fallback;
-      document.querySelectorAll('.stage[data-stage]').forEach((el) => {
-        const idx = Number(el.dataset.stage);
-        const isActive = idx === activeStage;
-        el.classList.toggle('active', isActive);
-        el.classList.toggle('minimized', !isActive);
-      });
-      $('input-task').readOnly = activeStage !== 1;
-      updateStageSummaries();
-    }
-    function continueStage(index) {
-      markStageCompleted(index, true);
-      const current = LEFT_STAGES.indexOf(index);
-      const next = current >= 0 ? LEFT_STAGES[Math.min(current + 1, LEFT_STAGES.length - 1)] : LEFT_STAGES[0];
-      goToStage(next);
-    }
-    function backStage(index) {
-      const current = LEFT_STAGES.indexOf(index);
-      const prev = current > 0 ? LEFT_STAGES[current - 1] : LEFT_STAGES[0];
-      goToStage(prev);
-    }
-
-    function pretty(value) {
-      return JSON.stringify(value ?? null, null, 2);
-    }
-    function setJson(id, payload) {
-      const el = $(id);
-      if (el) el.textContent = pretty(payload);
-    }
-    function setStageState(id, state) {
-      const el = $(id);
-      if (!el) return;
-      const normalized = ['idle', 'running', 'success', 'failed'].includes(state) ? state : 'idle';
-      el.textContent = normalized;
-      el.className = 'badge ' + normalized;
-    }
-    function setGlobalState(state, label) {
-      const el = $('global-status');
-      const normalized = ['idle', 'running', 'success', 'failed'].includes(state) ? state : 'idle';
-      el.textContent = label || normalized;
-      el.className = 'badge ' + normalized;
-    }
-    function setLiveUrl(url) {
-      latestLiveUrl = String(url || '').trim();
-      $('live-url').textContent = latestLiveUrl || 'No live URL yet.';
-      $('btn-open').disabled = !latestLiveUrl;
-      setStageState('badge-live', latestLiveUrl ? 'success' : 'idle');
-      updateStageSummaries();
-    }
-    function buildPreviewSummary() {
-      const task = $('input-task').value.trim();
-      const source = getSourceState();
-      const branch = $('input-branch').value.trim() || source.branch || 'main';
-      const scope = source.mode === 'new' ? 'a new project' : (source.ownerRepo || 'the selected repository');
-      if (!task) {
-        return 'Preparing a UI-focused update for ' + scope + ' on branch ' + branch + '.';
-      }
-      return 'Building ' + scope + ' on branch ' + branch + ': ' + task.slice(0, 180);
-    }
-    async function renderPreview() {
-      setStageState('badge-preview', 'running');
-      setGlobalState('running', 'Rendering preview');
-      const summary = buildPreviewSummary();
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      const previewPayload = {
-        generatedAt: new Date().toISOString(),
-        summary,
-        layout: 'mock-ui',
-        status: 'preview_ready',
+    function initDashboard() {
+      const $ = (id) => document.getElementById(id);
+      const bySelector = (selector) => document.querySelector(selector);
+      const bySelectorAll = (selector) => Array.from(document.querySelectorAll(selector));
+      const firstEl = (...ids) => ids.map((id) => $(id)).find(Boolean) || null;
+      const safeText = (id, text) => {
+        const el = $(id);
+        if (el) el.textContent = text;
       };
-      $('preview-summary').textContent = summary;
-      setJson('json-preview', previewPayload);
-      setStageState('badge-preview', 'success');
-      setGlobalState('idle', 'Preview ready');
-      markStageCompleted(4, true);
-      updateStageSummaries();
-    }
-    async function fetchJson(url, options) {
-      const res = await fetch(url, options);
-      const data = await res.json().catch(() => ({}));
-      return { ok: res.ok, status: res.status, data };
-    }
-    function shortCommit(sha) {
-      const text = String(sha || '').trim();
-      return text ? text.slice(0, 7) : 'pending';
-    }
-    function normalizeOwnerRepo(raw) {
-      const text = String(raw || '').trim().replace(/^\/+|\/+$/g, '');
-      if (!text) return '';
-      const parts = text.split('/').filter(Boolean);
-      if (parts.length < 2) return text;
-      return parts[0] + '/' + parts[1].replace(/\.git$/, '');
-    }
-    function parseRepoUrl(repoUrl) {
-      const raw = String(repoUrl || '').trim();
-      if (!raw) return '';
-      const match = raw.match(/github\\.com[:/](.+?)(?:\\.git)?$/i);
-      return match ? normalizeOwnerRepo(match[1]) : '';
-    }
-    function setList(id, items) {
-      const el = $(id);
-      if (!el) return;
-      el.innerHTML = '';
-      const values = Array.isArray(items) ? items.filter(Boolean) : [];
-      if (!values.length) {
-        el.innerHTML = '<li class="scan-empty">No findings yet.</li>';
-        return;
-      }
-      values.forEach((item) => {
-        const li = document.createElement('li');
-        li.textContent = String(item);
-        el.appendChild(li);
-      });
-    }
-    function setTopMode(mode) {
-      topLevelMode = mode === 'scan' ? 'scan' : 'build';
-      $('build-workspace').style.display = topLevelMode === 'build' ? 'grid' : 'none';
-      $('scan-workspace').style.display = topLevelMode === 'scan' ? 'grid' : 'none';
-      $('mode-build').classList.toggle('active', topLevelMode === 'build');
-      $('mode-scan').classList.toggle('active', topLevelMode === 'scan');
-      $('btn-refresh').disabled = topLevelMode === 'scan';
-      if (topLevelMode === 'scan') {
-        setGlobalState('idle', 'Scan mode');
-      } else {
-        setGlobalState('idle', 'Idle');
-      }
-    }
-    function getScanState() {
-      const repoUrl = $('scan-repo-url').value.trim();
-      const ownerRepo = normalizeOwnerRepo($('scan-owner-repo').value.trim() || parseRepoUrl(repoUrl));
-      const branch = $('scan-branch').value.trim() || 'main';
-      return { repoUrl, ownerRepo, branch };
-    }
-    async function startRepoScan() {
-      const scan = getScanState();
-      if (!scan.ownerRepo && !scan.repoUrl) {
-        setStageState('badge-scan', 'failed');
-        setJson('json-scan', { error: 'Repository URL or owner/repo is required.' });
-        setGlobalState('failed', 'Scan failed');
-        return;
-      }
-      setStageState('badge-scan', 'running');
-      setGlobalState('running', 'Scanning repository');
-      await new Promise((resolve) => setTimeout(resolve, 450));
-      const repoLabel = scan.ownerRepo || 'repository';
-      const findings = {
-        mode: 'scan_repository',
-        scannedAt: new Date().toISOString(),
-        repositoryUrl: scan.repoUrl || null,
-        ownerRepo: scan.ownerRepo || null,
-        branch: scan.branch,
-        projectSummary: [
-          repoLabel + ' analyzed on branch ' + scan.branch + '.',
-          'Repository appears ready for deeper architectural and quality checks.',
-          'No deployment actions were triggered in scan mode.',
-        ],
-        stackDetection: [
-          'Primary stack detection is pending backend scan integration.',
-          'Frontend and server runtime indicators will be surfaced in this section.',
-        ],
-        keyFiles: [
-          'package.json / equivalent manifest',
-          'README and setup docs',
-          'Primary application entry points',
-        ],
-        risks: [
-          'Dependency and security risk scoring will be added in follow-up.',
-          'Configuration drift checks are planned for a later backend pass.',
-        ],
-        recommendations: [
-          'Enable backend-powered file parsing for concrete stack detection.',
-          'Convert findings into tasks using follow-up actions once available.',
-        ],
-        followUpActionsAvailable: false,
+      const safeValue = (id, fallback = '') => {
+        const el = $(id);
+        if (!el) return fallback;
+        return typeof el.value === 'string' ? el.value : fallback;
       };
-      setJson('json-scan', findings);
-      setList('scan-project-summary', findings.projectSummary);
-      setList('scan-stack-detection', findings.stackDetection);
-      setList('scan-key-files', findings.keyFiles);
-      setList('scan-risks', findings.risks);
-      setList('scan-recommendations', findings.recommendations);
-      setStageState('badge-scan', 'success');
-      setGlobalState('success', 'Scan complete');
-    }
-    function getSourceState() {
-      const mode = $('input-source-mode').value;
-      const repoUrl = $('input-repo-url').value.trim();
-      const ownerRepoInput = $('input-owner-repo').value.trim();
-      const parsedFromUrl = parseRepoUrl(repoUrl);
-      const ownerRepo = normalizeOwnerRepo(ownerRepoInput || parsedFromUrl);
-      const branch = $('input-source-branch').value.trim() || 'main';
-      return { mode, repoUrl, ownerRepo, branch };
-    }
-    async function pullRepository() {
-      setStageState('badge-source', 'running');
-      setGlobalState('running', 'Loading GitHub source');
-      const source = getSourceState();
-      if (!source.ownerRepo && source.mode === 'existing') {
-        const err = { error: 'Owner/repo is required for Existing Repo mode.' };
-        setJson('json-source', err);
-        $('meta-source').textContent = err.error;
-        setStageState('badge-source', 'failed');
-        setGlobalState('failed', 'Source load failed');
-        updateStageSummaries();
-        return;
-      }
-
-      const details = {
-        loaded: true,
-        mode: source.mode,
-        repositoryUrl: source.repoUrl || null,
-        ownerRepo: source.ownerRepo || null,
-        branch: source.branch,
-        sourceStatus: source.mode === 'new' ? 'new_project_ready' : 'repository_loaded',
+      const safeTrim = (id, fallback = '') => String(safeValue(id, fallback) || '').trim();
+      const safeChecked = (id) => {
+        const el = $(id);
+        return !!(el && 'checked' in el && el.checked);
       };
-      setJson('json-source', details);
-      $('input-owner-repo').value = source.ownerRepo;
-      $('input-branch').value = source.branch;
-      $('meta-source').textContent = source.mode === 'new'
-        ? 'New Project ready' + (source.ownerRepo ? ' · Target: ' + source.ownerRepo : '') + ' · Branch: ' + source.branch
-        : 'Loaded: ' + source.ownerRepo + ' · Branch: ' + source.branch;
-      setStageState('badge-source', 'success');
-      setGlobalState('idle', 'Source ready');
-      markStageCompleted(2, true);
-      updateStageSummaries();
-    }
-    async function refreshRouteAndDeployment() {
-      const routeResult = await fetchJson('/route');
-      setJson('json-route', routeResult.data);
-      const liveFromRoute = Array.isArray(routeResult.data.routes) && routeResult.data.routes[0]
-        ? 'http://' + routeResult.data.routes[0].domain
-        : '';
-
-      const depResult = await fetchJson('/deployments/latest');
-      setJson('json-deployment', depResult.data);
-      const dep = depResult.data || {};
-      const depStatus = String(dep.status || '').toLowerCase();
-      if (depStatus === 'success') {
-        setStageState('badge-railway', 'success');
-      } else if (depStatus === 'failed') {
-        setStageState('badge-railway', 'failed');
-      } else if (depStatus) {
-        setStageState('badge-railway', 'running');
-      } else {
-        setStageState('badge-railway', 'idle');
-      }
-      setLiveUrl(dep.url || liveFromRoute || '');
-      updateStageSummaries();
-    }
-    async function runGenerate() {
-      setStageState('badge-request', 'success');
-      const source = getSourceState();
-      if (!source.ownerRepo && source.mode === 'existing') {
-        setJson('json-source', { error: 'Load an existing repository in GitHub Source before generating.' });
-        $('meta-source').textContent = 'Source: existing repo not loaded';
-        setStageState('badge-source', 'failed');
-        setStageState('badge-generate', 'failed');
-        setGlobalState('failed', 'Flow failed');
-        updateStageSummaries();
-        return;
-      }
-      if (source.ownerRepo || source.repoUrl || source.mode === 'new') {
-        setStageState('badge-source', 'success');
-      }
-      setStageState('badge-generate', 'running');
-      setStageState('badge-preview', 'idle');
-      setStageState('badge-push', 'idle');
-      setStageState('badge-live', 'idle');
-      setGlobalState('running', 'Flow running');
-
-      const payload = { task: $('input-task').value.trim() || 'Echo a short status update and exit.' };
-      try {
-        const result = await fetchJson('/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+      const safeBind = (el, event, handler) => {
+        if (!el) return false;
+        el.addEventListener(event, (e) => {
+          try {
+            const maybePromise = handler(e);
+            if (maybePromise && typeof maybePromise.catch === 'function') {
+              maybePromise.catch((err) => console.error('[dashboard] handler error:', err));
+            }
+          } catch (err) {
+            console.error('[dashboard] handler error:', err);
+          }
         });
-        setJson('json-generate', result.data);
-        if (!result.ok || !result.data || result.data.success === false) {
+        return true;
+      };
+      const safeBindFirst = (event, handler, ...ids) => safeBind(firstEl(...ids), event, handler);
+
+      let latestLiveUrl = '';
+      let activeStage = 1;
+      let topLevelMode = 'build';
+      const LEFT_STAGES = [1, 2, 3, 5, 6];
+      const completedStages = new Set();
+
+      function stageEl(index) {
+        return bySelector('.stage[data-stage="' + index + '"]');
+      }
+      function getSourceState() {
+        const mode = safeValue('input-source-mode', 'existing');
+        const repoUrl = safeTrim('input-repo-url');
+        const ownerRepoInput = safeTrim('input-owner-repo');
+        const parsedFromUrl = parseRepoUrl(repoUrl);
+        const ownerRepo = normalizeOwnerRepo(ownerRepoInput || parsedFromUrl);
+        const branch = safeTrim('input-source-branch', 'main') || 'main';
+        return { mode, repoUrl, ownerRepo, branch };
+      }
+      function updateStageSummaries() {
+        const task = safeTrim('input-task');
+        safeText('summary-stage-1', task ? ('Request: ' + task.slice(0, 120)) : 'No request entered yet.');
+        const source = getSourceState();
+        safeText('summary-stage-2', source.mode === 'new'
+          ? 'New project' + (source.ownerRepo ? ' → ' + source.ownerRepo : '') + ' · ' + source.branch
+          : (source.ownerRepo ? ('Existing repo: ' + source.ownerRepo + ' · ' + source.branch) : 'Existing repo not loaded.'));
+        safeText('summary-stage-3', ($( 'meta-generate') && $('meta-generate').textContent) || 'Code action: pending.');
+        safeText('summary-stage-4', ($( 'preview-summary') && $('preview-summary').textContent) || 'Preview: not rendered.');
+        safeText('summary-stage-5', ($( 'meta-github') && $('meta-github').textContent) || 'Push status: pending.');
+        const deployStatus = ($( 'badge-railway') && $('badge-railway').textContent) || 'idle';
+        safeText('summary-stage-6', 'Deploy status: ' + deployStatus + ' · ' + safeTrim('input-project') + '/' + safeTrim('input-service'));
+        safeText('summary-stage-7', latestLiveUrl ? ('Live app: ' + latestLiveUrl) : 'Live app: not available.');
+      }
+      function markStageCompleted(index, done = true) {
+        if (done) completedStages.add(index);
+        else completedStages.delete(index);
+        const editBtn = bySelector('.btn-edit-stage[data-target-stage="' + index + '"]');
+        if (editBtn) editBtn.style.display = completedStages.has(index) ? '' : 'none';
+      }
+      function goToStage(index) {
+        const requested = Math.max(1, Math.min(6, Number(index) || 1));
+        const fallback = LEFT_STAGES.includes(requested)
+          ? requested
+          : LEFT_STAGES.reduce((best, current) => (Math.abs(current - requested) < Math.abs(best - requested) ? current : best), LEFT_STAGES[0]);
+        activeStage = fallback;
+        bySelectorAll('.stage[data-stage]').forEach((el) => {
+          const idx = Number(el.dataset.stage);
+          const isActive = idx === activeStage;
+          el.classList.toggle('active', isActive);
+          el.classList.toggle('minimized', !isActive);
+        });
+        const taskInput = $('input-task');
+        if (taskInput) taskInput.readOnly = activeStage !== 1;
+        updateStageSummaries();
+      }
+      function continueStage(index) {
+        markStageCompleted(index, true);
+        const current = LEFT_STAGES.indexOf(index);
+        const next = current >= 0 ? LEFT_STAGES[Math.min(current + 1, LEFT_STAGES.length - 1)] : LEFT_STAGES[0];
+        goToStage(next);
+      }
+      function backStage(index) {
+        const current = LEFT_STAGES.indexOf(index);
+        const prev = current > 0 ? LEFT_STAGES[current - 1] : LEFT_STAGES[0];
+        goToStage(prev);
+      }
+
+      function pretty(value) {
+        return JSON.stringify(value ?? null, null, 2);
+      }
+      function setJson(id, payload) {
+        const el = $(id);
+        if (el) el.textContent = pretty(payload);
+      }
+      function setStageState(id, state) {
+        const el = $(id);
+        if (!el) return;
+        const normalized = ['idle', 'running', 'success', 'failed'].includes(state) ? state : 'idle';
+        el.textContent = normalized;
+        el.className = 'badge ' + normalized;
+      }
+      function setGlobalState(state, label) {
+        const el = $('global-status');
+        if (!el) return;
+        const normalized = ['idle', 'running', 'success', 'failed'].includes(state) ? state : 'idle';
+        el.textContent = label || normalized;
+        el.className = 'badge ' + normalized;
+      }
+      function setLiveUrl(url) {
+        latestLiveUrl = String(url || '').trim();
+        safeText('live-url', latestLiveUrl || 'No live URL yet.');
+        const openBtn = firstEl('btn-open', 'btn-open-live-app');
+        if (openBtn) openBtn.disabled = !latestLiveUrl;
+        setStageState('badge-live', latestLiveUrl ? 'success' : 'idle');
+        updateStageSummaries();
+      }
+      function buildPreviewSummary() {
+        const task = safeTrim('input-task');
+        const source = getSourceState();
+        const branch = safeTrim('input-branch') || source.branch || 'main';
+        const scope = source.mode === 'new' ? 'a new project' : (source.ownerRepo || 'the selected repository');
+        if (!task) return 'Preparing a UI-focused update for ' + scope + ' on branch ' + branch + '.';
+        return 'Building ' + scope + ' on branch ' + branch + ': ' + task.slice(0, 180);
+      }
+      async function renderPreview() {
+        setStageState('badge-preview', 'running');
+        setGlobalState('running', 'Rendering preview');
+        const summary = buildPreviewSummary();
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        const previewPayload = { generatedAt: new Date().toISOString(), summary, layout: 'mock-ui', status: 'preview_ready' };
+        safeText('preview-summary', summary);
+        setJson('json-preview', previewPayload);
+        setStageState('badge-preview', 'success');
+        setGlobalState('idle', 'Preview ready');
+        markStageCompleted(4, true);
+        updateStageSummaries();
+      }
+      async function fetchJson(url, options) {
+        const res = await fetch(url, options);
+        const data = await res.json().catch(() => ({}));
+        return { ok: res.ok, status: res.status, data };
+      }
+      function shortCommit(sha) {
+        const text = String(sha || '').trim();
+        return text ? text.slice(0, 7) : 'pending';
+      }
+      function normalizeOwnerRepo(raw) {
+        const text = String(raw || '').trim().replace(/^\/+|\/+$/g, '');
+        if (!text) return '';
+        const parts = text.split('/').filter(Boolean);
+        if (parts.length < 2) return text;
+        return parts[0] + '/' + parts[1].replace(/\.git$/, '');
+      }
+      function parseRepoUrl(repoUrl) {
+        const raw = String(repoUrl || '').trim();
+        if (!raw) return '';
+        const match = raw.match(/github\.com[:/](.+?)(?:\.git)?$/i);
+        return match ? normalizeOwnerRepo(match[1]) : '';
+      }
+      function setList(id, items) {
+        const el = $(id);
+        if (!el) return;
+        el.innerHTML = '';
+        const values = Array.isArray(items) ? items.filter(Boolean) : [];
+        if (!values.length) {
+          el.innerHTML = '<li class="scan-empty">No findings yet.</li>';
+          return;
+        }
+        values.forEach((item) => {
+          const li = document.createElement('li');
+          li.textContent = String(item);
+          el.appendChild(li);
+        });
+      }
+      function setTopMode(mode) {
+        topLevelMode = mode === 'scan' ? 'scan' : 'build';
+        const buildWorkspace = $('build-workspace');
+        const scanWorkspace = $('scan-workspace');
+        if (buildWorkspace) buildWorkspace.style.display = topLevelMode === 'build' ? 'grid' : 'none';
+        if (scanWorkspace) scanWorkspace.style.display = topLevelMode === 'scan' ? 'grid' : 'none';
+        const buildBtn = firstEl('mode-build', 'btn-build');
+        const scanBtn = firstEl('mode-scan', 'btn-scan-repository');
+        if (buildBtn) buildBtn.classList.toggle('active', topLevelMode === 'build');
+        if (scanBtn) scanBtn.classList.toggle('active', topLevelMode === 'scan');
+        const refreshBtn = firstEl('btn-refresh', 'btn-refresh-pipeline-status');
+        if (refreshBtn) refreshBtn.disabled = topLevelMode === 'scan';
+        setGlobalState('idle', topLevelMode === 'scan' ? 'Scan mode' : 'Idle');
+      }
+      function getScanState() {
+        const repoUrl = safeTrim('scan-repo-url');
+        const ownerRepo = normalizeOwnerRepo(safeTrim('scan-owner-repo') || parseRepoUrl(repoUrl));
+        const branch = safeTrim('scan-branch', 'main') || 'main';
+        return { repoUrl, ownerRepo, branch };
+      }
+      async function startRepoScan() {
+        const scan = getScanState();
+        if (!scan.ownerRepo && !scan.repoUrl) {
+          setStageState('badge-scan', 'failed');
+          setJson('json-scan', { error: 'Repository URL or owner/repo is required.' });
+          setGlobalState('failed', 'Scan failed');
+          return;
+        }
+        setStageState('badge-scan', 'running');
+        setGlobalState('running', 'Scanning repository');
+        await new Promise((resolve) => setTimeout(resolve, 450));
+        const repoLabel = scan.ownerRepo || 'repository';
+        const findings = {
+          mode: 'scan_repository',
+          scannedAt: new Date().toISOString(),
+          repositoryUrl: scan.repoUrl || null,
+          ownerRepo: scan.ownerRepo || null,
+          branch: scan.branch,
+          projectSummary: [
+            repoLabel + ' analyzed on branch ' + scan.branch + '.',
+            'Repository appears ready for deeper architectural and quality checks.',
+            'No deployment actions were triggered in scan mode.',
+          ],
+          stackDetection: [
+            'Primary stack detection is pending backend scan integration.',
+            'Frontend and server runtime indicators will be surfaced in this section.',
+          ],
+          keyFiles: [
+            'package.json / equivalent manifest',
+            'README and setup docs',
+            'Primary application entry points',
+          ],
+          risks: [
+            'Dependency and security risk scoring will be added in follow-up.',
+            'Configuration drift checks are planned for a later backend pass.',
+          ],
+          recommendations: [
+            'Enable backend-powered file parsing for concrete stack detection.',
+            'Convert findings into tasks using follow-up actions once available.',
+          ],
+          followUpActionsAvailable: false,
+        };
+        setJson('json-scan', findings);
+        setList('scan-project-summary', findings.projectSummary);
+        setList('scan-stack-detection', findings.stackDetection);
+        setList('scan-key-files', findings.keyFiles);
+        setList('scan-risks', findings.risks);
+        setList('scan-recommendations', findings.recommendations);
+        setStageState('badge-scan', 'success');
+        setGlobalState('success', 'Scan complete');
+      }
+      async function pullRepository() {
+        setStageState('badge-source', 'running');
+        setGlobalState('running', 'Loading GitHub source');
+        const source = getSourceState();
+        if (!source.ownerRepo && source.mode === 'existing') {
+          const err = { error: 'Owner/repo is required for Existing Repo mode.' };
+          setJson('json-source', err);
+          safeText('meta-source', err.error);
+          setStageState('badge-source', 'failed');
+          setGlobalState('failed', 'Source load failed');
+          updateStageSummaries();
+          return;
+        }
+
+        const details = {
+          loaded: true,
+          mode: source.mode,
+          repositoryUrl: source.repoUrl || null,
+          ownerRepo: source.ownerRepo || null,
+          branch: source.branch,
+          sourceStatus: source.mode === 'new' ? 'new_project_ready' : 'repository_loaded',
+        };
+        setJson('json-source', details);
+        const ownerInput = $('input-owner-repo');
+        const branchInput = $('input-branch');
+        if (ownerInput) ownerInput.value = source.ownerRepo;
+        if (branchInput) branchInput.value = source.branch;
+        safeText('meta-source', source.mode === 'new'
+          ? 'New Project ready' + (source.ownerRepo ? ' · Target: ' + source.ownerRepo : '') + ' · Branch: ' + source.branch
+          : 'Loaded: ' + source.ownerRepo + ' · Branch: ' + source.branch);
+        setStageState('badge-source', 'success');
+        setGlobalState('idle', 'Source ready');
+        markStageCompleted(2, true);
+        updateStageSummaries();
+      }
+      async function refreshRouteAndDeployment() {
+        const routeResult = await fetchJson('/route');
+        setJson('json-route', routeResult.data);
+        const liveFromRoute = Array.isArray(routeResult.data.routes) && routeResult.data.routes[0]
+          ? 'http://' + routeResult.data.routes[0].domain
+          : '';
+
+        const depResult = await fetchJson('/deployments/latest');
+        setJson('json-deployment', depResult.data);
+        const dep = depResult.data || {};
+        const depStatus = String(dep.status || '').toLowerCase();
+        if (depStatus === 'success') setStageState('badge-railway', 'success');
+        else if (depStatus === 'failed') setStageState('badge-railway', 'failed');
+        else if (depStatus) setStageState('badge-railway', 'running');
+        else setStageState('badge-railway', 'idle');
+
+        setLiveUrl(dep.url || liveFromRoute || '');
+        updateStageSummaries();
+      }
+      async function runGenerate() {
+        setStageState('badge-request', 'success');
+        const source = getSourceState();
+        if (!source.ownerRepo && source.mode === 'existing') {
+          setJson('json-source', { error: 'Load an existing repository in GitHub Source before generating.' });
+          safeText('meta-source', 'Source: existing repo not loaded');
+          setStageState('badge-source', 'failed');
           setStageState('badge-generate', 'failed');
-          setStageState('badge-push', 'failed');
           setGlobalState('failed', 'Flow failed');
           updateStageSummaries();
           return;
         }
-        setStageState('badge-generate', 'success');
-        const branch = String(result.data.branch || source.branch || $('input-branch').value || 'main');
-        $('input-branch').value = branch;
-        const commitSha = String(($('input-commitSha').value || '').trim());
-        const displayRepo = source.ownerRepo || (location.hostname || 'local');
-        $('meta-generate').textContent = 'Repo: ' + displayRepo + ' · Branch: ' + branch;
+        if (source.ownerRepo || source.repoUrl || source.mode === 'new') setStageState('badge-source', 'success');
 
-        const githubData = {
-          repo: displayRepo || 'local-repo',
-          branch,
-          commit: commitSha,
-          commitMessage: result.data.commit_message || 'Generated by RW pipeline',
-          status: 'pushed',
+        setStageState('badge-generate', 'running');
+        setStageState('badge-preview', 'idle');
+        setStageState('badge-push', 'idle');
+        setStageState('badge-live', 'idle');
+        setGlobalState('running', 'Flow running');
+
+        const payload = { task: safeTrim('input-task') || 'Echo a short status update and exit.' };
+        try {
+          const result = await fetchJson('/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          setJson('json-generate', result.data);
+          if (!result.ok || !result.data || result.data.success === false) {
+            setStageState('badge-generate', 'failed');
+            setStageState('badge-push', 'failed');
+            setGlobalState('failed', 'Flow failed');
+            updateStageSummaries();
+            return;
+          }
+          setStageState('badge-generate', 'success');
+          const branch = String(result.data.branch || source.branch || safeValue('input-branch', 'main') || 'main');
+          const branchInput = $('input-branch');
+          if (branchInput) branchInput.value = branch;
+          const commitSha = safeTrim('input-commitSha');
+          const displayRepo = source.ownerRepo || (location.hostname || 'local');
+          safeText('meta-generate', 'Repo: ' + displayRepo + ' · Branch: ' + branch);
+
+          const githubData = {
+            repo: displayRepo || 'local-repo',
+            branch,
+            commit: commitSha,
+            commitMessage: result.data.commit_message || 'Generated by RW pipeline',
+            status: 'pushed',
+          };
+          setJson('json-github', githubData);
+          safeText('preview-summary', buildPreviewSummary());
+          setJson('json-preview', {
+            generatedAt: new Date().toISOString(),
+            status: 'pending_render',
+            summary: buildPreviewSummary(),
+          });
+          safeText('meta-github', 'Branch: ' + branch + ' · Commit: ' + shortCommit(commitSha));
+          setStageState('badge-push', 'success');
+          setGlobalState('running', 'Ready to preview and deploy');
+          markStageCompleted(3, true);
+          markStageCompleted(5, true);
+          updateStageSummaries();
+        } catch (err) {
+          setJson('json-generate', { error: String((err && err.message) || err) });
+          setStageState('badge-generate', 'failed');
+          setStageState('badge-push', 'failed');
+          setGlobalState('failed', 'Flow failed');
+          updateStageSummaries();
+        }
+      }
+      async function triggerDeployment() {
+        const button = firstEl('btn-trigger', 'btn-deploy-railway');
+        if (button) button.disabled = true;
+        setStageState('badge-railway', 'running');
+        setGlobalState('running', 'Deploying on Railway');
+        const payload = {
+          project: safeTrim('input-project'),
+          service: safeTrim('input-service'),
+          branch: safeTrim('input-branch'),
+          commitSha: safeTrim('input-commitSha'),
         };
-        setJson('json-github', githubData);
-        $('preview-summary').textContent = buildPreviewSummary();
-        setJson('json-preview', {
-          generatedAt: new Date().toISOString(),
-          status: 'pending_render',
-          summary: buildPreviewSummary(),
-        });
-        $('meta-github').textContent = 'Branch: ' + branch + ' · Commit: ' + shortCommit(commitSha);
-        setStageState('badge-push', 'success');
-        setGlobalState('running', 'Ready to preview and deploy');
-        markStageCompleted(3, true);
-        markStageCompleted(5, true);
-        updateStageSummaries();
-      } catch (err) {
-        setJson('json-generate', { error: String(err && err.message || err) });
-        setStageState('badge-generate', 'failed');
-        setStageState('badge-push', 'failed');
-        setGlobalState('failed', 'Flow failed');
-        updateStageSummaries();
+        try {
+          const result = await fetchJson('/deployments/trigger', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          setJson('json-deployment', result.data);
+          setStageState('badge-railway', result.ok ? 'success' : 'failed');
+          await refreshRouteAndDeployment();
+          setGlobalState(result.ok ? 'success' : 'failed', result.ok ? 'Pipeline ready' : 'Deploy failed');
+          markStageCompleted(6, !!result.ok);
+          markStageCompleted(7, !!result.ok && !!latestLiveUrl);
+          updateStageSummaries();
+        } catch (err) {
+          setJson('json-deployment', { error: String((err && err.message) || err) });
+          setStageState('badge-railway', 'failed');
+          setGlobalState('failed', 'Deploy failed');
+          updateStageSummaries();
+        } finally {
+          if (button) button.disabled = false;
+        }
       }
-    }
-    async function triggerDeployment() {
-      const button = $('btn-trigger');
-      button.disabled = true;
-      setStageState('badge-railway', 'running');
-      setGlobalState('running', 'Deploying on Railway');
-      const payload = {
-        project: $('input-project').value.trim(),
-        service: $('input-service').value.trim(),
-        branch: $('input-branch').value.trim(),
-        commitSha: $('input-commitSha').value.trim(),
-      };
-      try {
-        const result = await fetchJson('/deployments/trigger', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        setJson('json-deployment', result.data);
-        setStageState('badge-railway', result.ok ? 'success' : 'failed');
-        await refreshRouteAndDeployment();
-        setGlobalState(result.ok ? 'success' : 'failed', result.ok ? 'Pipeline ready' : 'Deploy failed');
-        markStageCompleted(6, !!result.ok);
-        markStageCompleted(7, !!result.ok && !!latestLiveUrl);
-        updateStageSummaries();
-      } catch (err) {
-        setJson('json-deployment', { error: String(err && err.message || err) });
-        setStageState('badge-railway', 'failed');
-        setGlobalState('failed', 'Deploy failed');
-        updateStageSummaries();
-      } finally {
-        button.disabled = false;
+      async function refreshAll() {
+        setGlobalState('running', 'Refreshing');
+        try {
+          await refreshRouteAndDeployment();
+          const health = await fetchJson('/health');
+          const worker = !!(health.data && health.data.workerConfigured);
+          if (!worker) setStageState('badge-request', 'idle');
+          setGlobalState('idle', 'Idle');
+          updateStageSummaries();
+        } catch (err) {
+          setJson('json-github', { error: String((err && err.message) || err) });
+          setGlobalState('failed', 'Refresh failed');
+          updateStageSummaries();
+        }
       }
-    }
-    async function refreshAll() {
-      setGlobalState('running', 'Refreshing');
-      try {
-        await refreshRouteAndDeployment();
-        const health = await fetchJson('/health');
-        const worker = !!(health.data && health.data.workerConfigured);
-        if (!worker) setStageState('badge-request', 'idle');
-        setGlobalState('idle', 'Idle');
-        updateStageSummaries();
-      } catch (err) {
-        setJson('json-github', { error: String(err && err.message || err) });
-        setGlobalState('failed', 'Refresh failed');
-        updateStageSummaries();
+      function openLiveApp() {
+        if (latestLiveUrl) window.open(latestLiveUrl, '_blank', 'noopener');
       }
-    }
-    function openLiveApp() {
-      if (latestLiveUrl) window.open(latestLiveUrl, '_blank', 'noopener');
-    }
 
-    $('toggle-advanced').addEventListener('change', (event) => {
-      document.body.classList.toggle('show-advanced', !!event.target.checked);
-    });
-    $('mode-build').addEventListener('click', () => setTopMode('build'));
-    $('mode-scan').addEventListener('click', () => setTopMode('scan'));
-    $('btn-start-scan').addEventListener('click', startRepoScan);
-    $('btn-run').addEventListener('click', runGenerate);
-    $('btn-preview').addEventListener('click', renderPreview);
-    $('btn-pull').addEventListener('click', pullRepository);
-    $('btn-trigger').addEventListener('click', triggerDeployment);
-    $('btn-refresh').addEventListener('click', refreshAll);
-    $('btn-open').addEventListener('click', openLiveApp);
-    $('btn-continue-1').addEventListener('click', () => {
-      setStageState('badge-request', 'success');
-      markStageCompleted(1, true);
-      continueStage(1);
-    });
-    $('btn-continue-2').addEventListener('click', () => continueStage(2));
-    $('btn-continue-3').addEventListener('click', () => continueStage(3));
-    $('btn-continue-5').addEventListener('click', () => continueStage(5));
-    $('btn-continue-6').addEventListener('click', () => continueStage(6));
-    $('btn-back-2').addEventListener('click', () => backStage(2));
-    $('btn-back-3').addEventListener('click', () => backStage(3));
-    $('btn-back-5').addEventListener('click', () => backStage(5));
-    $('btn-back-6').addEventListener('click', () => backStage(6));
-    document.querySelectorAll('.btn-edit-stage').forEach((button) => {
-      button.addEventListener('click', () => {
-        goToStage(Number(button.dataset.targetStage || 1));
+      safeBind(firstEl('toggle-advanced'), 'change', () => {
+        document.body.classList.toggle('show-advanced', safeChecked('toggle-advanced'));
       });
-    });
-    ['input-task', 'input-repo-url', 'input-owner-repo', 'input-source-branch', 'input-project', 'input-service', 'input-branch', 'input-commitSha'].forEach((id) => {
-      const el = $(id);
-      if (el) el.addEventListener('input', updateStageSummaries);
-    });
-    ['scan-repo-url', 'scan-owner-repo', 'scan-branch'].forEach((id) => {
-      const el = $(id);
-      if (el) {
-        el.addEventListener('input', () => {
+      safeBindFirst('click', () => setTopMode('build'), 'mode-build', 'btn-build');
+      safeBindFirst('click', () => setTopMode('scan'), 'mode-scan', 'btn-scan-repository');
+      safeBindFirst('click', startRepoScan, 'btn-start-scan', 'btn-scan-start');
+      safeBindFirst('click', runGenerate, 'btn-run', 'btn-generate');
+      safeBindFirst('click', renderPreview, 'btn-preview', 'btn-render-preview');
+      safeBindFirst('click', pullRepository, 'btn-pull', 'btn-pull-repository');
+      safeBindFirst('click', triggerDeployment, 'btn-trigger', 'btn-deploy-railway');
+      safeBindFirst('click', refreshAll, 'btn-refresh', 'btn-refresh-pipeline-status');
+      safeBindFirst('click', openLiveApp, 'btn-open', 'btn-open-live-app');
+
+      safeBind(firstEl('btn-continue-1'), 'click', () => {
+        setStageState('badge-request', 'success');
+        markStageCompleted(1, true);
+        continueStage(1);
+      });
+      safeBind(firstEl('btn-continue-2'), 'click', () => continueStage(2));
+      safeBind(firstEl('btn-continue-3'), 'click', () => continueStage(3));
+      safeBind(firstEl('btn-continue-5'), 'click', () => continueStage(5));
+      safeBind(firstEl('btn-continue-6'), 'click', () => continueStage(6));
+      safeBind(firstEl('btn-back-2'), 'click', () => backStage(2));
+      safeBind(firstEl('btn-back-3'), 'click', () => backStage(3));
+      safeBind(firstEl('btn-back-5'), 'click', () => backStage(5));
+      safeBind(firstEl('btn-back-6'), 'click', () => backStage(6));
+
+      bySelectorAll('.btn-edit-stage').forEach((button) => {
+        safeBind(button, 'click', () => goToStage(Number(button.dataset.targetStage || 1)));
+      });
+
+      ['input-task', 'input-repo-url', 'input-owner-repo', 'input-source-branch', 'input-project', 'input-service', 'input-branch', 'input-commitSha']
+        .forEach((id) => {
+          const el = $(id);
+          if (el) safeBind(el, 'input', updateStageSummaries);
+        });
+
+      ['scan-repo-url', 'scan-owner-repo', 'scan-branch'].forEach((id) => {
+        const el = $(id);
+        if (!el) return;
+        safeBind(el, 'input', () => {
           if (id !== 'scan-owner-repo') {
-            const scan = getScanState();
-            $('scan-owner-repo').value = scan.ownerRepo;
+            const ownerInput = $('scan-owner-repo');
+            if (ownerInput) ownerInput.value = getScanState().ownerRepo;
           }
         });
-      }
-    });
-    $('input-source-mode').addEventListener('change', updateStageSummaries);
-    goToStage(1);
-    setTopMode('build');
-    refreshAll();
+      });
+
+      safeBind(firstEl('input-source-mode'), 'change', updateStageSummaries);
+      bySelectorAll('[id^="btn-continue-"]').forEach((button) => {
+        if (button.dataset.boundAutoContinue === '1') return;
+        button.dataset.boundAutoContinue = '1';
+        const stageMatch = String(button.id).match(/btn-continue-(\d+)/);
+        if (stageMatch && !['1', '2', '3', '5', '6'].includes(stageMatch[1])) {
+          safeBind(button, 'click', () => continueStage(Number(stageMatch[1])));
+        }
+      });
+
+      if (stageEl(1)) goToStage(1);
+      setTopMode('build');
+      refreshAll().catch((err) => console.error('[dashboard] initial refresh failed:', err));
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initDashboard, { once: true });
+    } else {
+      initDashboard();
+    }
   </script>
+
 </body>
 </html>`;
 }
