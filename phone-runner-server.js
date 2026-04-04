@@ -231,1168 +231,269 @@ function renderDashboardHtml() {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>RW → GitHub → Railway Pipeline</title>
+  <title>RW GitHub → Railway Pipeline</title>
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #07101f;
-      --panel: #101c31;
-      --panel-2: #0c1527;
-      --panel-border: #24324b;
-      --text: #e5ecfb;
-      --muted: #9fb0d1;
-      --accent: #60a5fa;
-      --ok: #22c55e;
-      --warn: #f59e0b;
-      --err: #ef4444;
-      --idle: #94a3b8;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-      background: radial-gradient(circle at top, #1a2c50 0%, var(--bg) 45%);
-      color: var(--text);
-      min-height: 100vh;
-    }
-    .wrap {
-      max-width: 1300px;
-      margin: 0 auto;
-      padding: 20px 16px 26px;
-    }
-    h1 {
-      margin: 0 0 8px;
-      font-size: clamp(1.3rem, 1.5vw + 1rem, 2rem);
-      font-weight: 700;
-      letter-spacing: 0.2px;
-    }
-    .subtitle {
-      margin: 0 0 16px;
-      color: var(--muted);
-      font-size: 0.95rem;
-    }
-    .top-actions {
-      margin-bottom: 16px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-    }
-    .mode-switch {
-      display: inline-flex;
-      background: #0b172b;
-      border: 1px solid #2b3f64;
-      border-radius: 999px;
-      padding: 3px;
-      gap: 4px;
-    }
-    .mode-pill {
-      border: 1px solid transparent;
-      background: transparent;
-      color: #c9daf7;
-      border-radius: 999px;
-      padding: 7px 12px;
-      font-weight: 650;
-    }
-    .mode-pill.active {
-      border-color: #3a5ea8;
-      background: linear-gradient(180deg, #3f74d6, #355fb1);
-      color: #fff;
-    }
-    .workspace {
-      display: grid;
-      grid-template-columns: minmax(340px, 0.9fr) minmax(520px, 1.3fr);
-      gap: 16px;
-      align-items: start;
-    }
-    .pipeline {
-      display: grid;
-      gap: 10px;
-      padding-bottom: 6px;
-    }
-    .watch-column {
-      display: grid;
-      gap: 12px;
-      position: sticky;
-      top: 12px;
-    }
-    .watch-panel {
-      background: linear-gradient(180deg, #13223d 0%, var(--panel-2) 100%);
-      border: 1px solid var(--panel-border);
-      border-radius: 12px;
-      min-height: 300px;
-      display: grid;
-      grid-template-rows: auto auto 1fr;
-      gap: 10px;
-      padding: 12px;
-      box-shadow: 0 8px 22px rgba(0,0,0,0.2);
-    }
-    .stage {
-      background: linear-gradient(180deg, #13223d 0%, var(--panel-2) 100%);
-      border: 1px solid var(--panel-border);
-      border-radius: 12px;
-      min-height: 120px;
-      display: grid;
-      grid-template-rows: auto auto auto;
-      gap: 10px;
-      padding: 12px;
-      position: relative;
-      box-shadow: 0 8px 22px rgba(0,0,0,0.2);
-    }
-    .stage.active {
-      min-height: 330px;
-      border-color: #3a5ea8;
-      box-shadow: 0 14px 32px rgba(37, 99, 235, 0.22);
-    }
-    .stage.minimized .stage-content,
-    .stage.minimized .stage-nav {
-      display: none;
-    }
-    .stage.active .stage-summary {
-      display: none;
-    }
-    .stage-summary {
-      border: 1px solid #2f4f80;
-      border-radius: 10px;
-      padding: 8px;
-      background: #0a162c;
-      color: #d8e8ff;
-      font-size: 0.82rem;
-      line-height: 1.35;
-      min-height: 44px;
-    }
-    .stage-title {
-      margin: 0;
-      font-size: 0.98rem;
-      font-weight: 700;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-    }
-    .stage-num {
-      font-size: 0.72rem;
-      color: #bfd5ff;
-      background: #1b2f52;
-      border: 1px solid #34558d;
-      border-radius: 999px;
-      padding: 2px 7px;
-    }
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      border-radius: 999px;
-      padding: 4px 8px;
-      font-size: 0.7rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-      border: 1px solid transparent;
-      white-space: nowrap;
-    }
-    .badge.idle { color: #dbeafe; background: rgba(148,163,184,0.18); border-color: rgba(148,163,184,0.5); }
-    .badge.running { color: #fde68a; background: rgba(245,158,11,0.2); border-color: rgba(245,158,11,0.45); }
-    .badge.success { color: #bbf7d0; background: rgba(34,197,94,0.18); border-color: rgba(34,197,94,0.45); }
-    .badge.failed { color: #fecaca; background: rgba(239,68,68,0.18); border-color: rgba(239,68,68,0.45); }
-    .meta {
-      margin: 0;
-      font-size: 0.78rem;
-      color: var(--muted);
-    }
-    pre {
-      margin: 0;
-      overflow: auto;
-      padding: 9px;
-      border-radius: 8px;
-      background: #091222;
-      border: 1px solid #23334f;
-      color: #c7f0ff;
-      font-size: 0.74rem;
-      line-height: 1.35;
-      white-space: pre-wrap;
-      word-break: break-word;
-      min-height: 130px;
-    }
-    .form {
-      display: grid;
-      gap: 8px;
-    }
-    .dual {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-    }
-    label {
-      display: grid;
-      gap: 4px;
-      font-size: 0.74rem;
-      color: var(--muted);
-    }
-    input, textarea, select {
-      width: 100%;
-      border-radius: 8px;
-      border: 1px solid #2b3a57;
-      background: #0a1322;
-      color: var(--text);
-      padding: 8px 9px;
-      font-size: 0.82rem;
-      font-family: inherit;
-    }
-    textarea {
-      min-height: 92px;
-      resize: vertical;
-    }
-    button {
-      appearance: none;
-      border: 1px solid #3a5ea8;
-      background: linear-gradient(180deg, #3f74d6, #355fb1);
-      color: white;
-      border-radius: 10px;
-      padding: 9px 11px;
-      font-weight: 650;
-      font-size: 0.82rem;
-      cursor: pointer;
-    }
-    button.secondary {
-      border-color: #3f4a5f;
-      background: linear-gradient(180deg, #202c44, #172036);
-      color: #c8d5ef;
-    }
-    button:disabled { opacity: 0.55; cursor: progress; }
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-    }
-    .url-box {
-      background: #081426;
-      border: 1px solid #28436c;
-      border-radius: 10px;
-      padding: 9px;
-      font-size: 0.81rem;
-      color: #cfe4ff;
-      word-break: break-all;
-      min-height: 62px;
-      display: flex;
-      align-items: center;
-    }
-    .preview-board {
-      border: 1px solid #355386;
-      border-radius: 10px;
-      background: linear-gradient(180deg, #0a1324, #0b172d);
-      min-height: 210px;
-      padding: 10px;
-      display: grid;
-      gap: 8px;
-    }
-    .preview-header {
-      height: 18px;
-      width: 50%;
-      border-radius: 6px;
-      background: linear-gradient(90deg, #375f9d, #1f3b67);
-    }
-    .preview-blocks {
-      display: grid;
-      grid-template-columns: 1.3fr 1fr;
-      gap: 8px;
-      min-height: 130px;
-    }
-    .preview-card, .preview-sidebar {
-      border: 1px solid #2a4067;
-      border-radius: 8px;
-      background: #0a1427;
-      padding: 8px;
-      display: grid;
-      gap: 6px;
-    }
-    .preview-line {
-      height: 10px;
-      border-radius: 6px;
-      background: linear-gradient(90deg, #2c4c7f, #1d3357);
-    }
-    .preview-summary {
-      border: 1px solid #2f4f80;
-      border-radius: 10px;
-      padding: 8px;
-      background: #0a162c;
-      color: #d8e8ff;
-      font-size: 0.82rem;
-      line-height: 1.35;
-      min-height: 62px;
-    }
-    .toggle-wrap {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--muted);
-      font-size: 0.8rem;
-    }
-    .advanced-json {
-      display: none;
-    }
-    body.show-advanced .advanced-json {
-      display: block;
-    }
-    .stage-header-actions {
-      margin-left: auto;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-    .stage-nav {
-      display: flex;
-      gap: 8px;
-      justify-content: flex-end;
-      align-items: center;
-      margin-top: auto;
-    }
-    .stage-content {
-      display: grid;
-      gap: 10px;
-    }
-    .scan-workspace {
-      display: none;
-      grid-template-columns: minmax(340px, 0.9fr) minmax(520px, 1.3fr);
-      gap: 16px;
-      align-items: start;
-    }
-    .scan-results {
-      display: grid;
-      gap: 12px;
-    }
-    .scan-section {
-      background: linear-gradient(180deg, #13223d 0%, var(--panel-2) 100%);
-      border: 1px solid var(--panel-border);
-      border-radius: 12px;
-      padding: 12px;
-      box-shadow: 0 8px 22px rgba(0,0,0,0.2);
-    }
-    .scan-section h3 {
-      margin: 0 0 8px;
-      font-size: 0.95rem;
-    }
-    .scan-section ul {
-      margin: 0;
-      padding-left: 18px;
-      color: #d8e8ff;
-      font-size: 0.82rem;
-      line-height: 1.4;
-    }
-    .scan-empty {
-      color: var(--muted);
-      font-size: 0.82rem;
-    }
-    @media (max-width: 1120px) {
-      .workspace {
-        grid-template-columns: 1fr;
-      }
-      .scan-workspace {
-        grid-template-columns: 1fr;
-      }
-      .watch-column {
-        position: static;
-      }
-    }
+    :root { color-scheme: dark; --bg:#07101f; --panel:#0f1b33; --border:#2b3e65; --text:#e6eeff; --muted:#9eb0d3; --accent:#4f8df6; --idle:#94a3b8; --run:#f59e0b; --ok:#22c55e; --err:#ef4444; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Inter,system-ui,sans-serif; background:radial-gradient(circle at top,#1b2c50 0%,var(--bg) 45%); color:var(--text); }
+    .wrap { max-width:980px; margin:0 auto; padding:20px 14px 30px; }
+    h1 { margin:0 0 8px; font-size:1.7rem; }
+    .subtitle { margin:0 0 16px; color:var(--muted); }
+    .topbar { display:flex; gap:8px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
+    .pipeline { display:grid; gap:12px; }
+    .step { background:linear-gradient(180deg,#152742,#0d172b); border:1px solid var(--border); border-radius:12px; padding:12px; display:grid; gap:10px; }
+    .step.locked { opacity:.7; }
+    .step h2 { margin:0; font-size:1rem; display:flex; justify-content:space-between; align-items:center; }
+    .meta { color:var(--muted); font-size:.85rem; margin:0; }
+    label { display:grid; gap:4px; font-size:.8rem; color:var(--muted); }
+    input, textarea, select { width:100%; border-radius:8px; border:1px solid #314566; background:#091425; color:var(--text); padding:8px; }
+    textarea { min-height:90px; resize:vertical; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    button { border:1px solid #3a5ea8; background:linear-gradient(180deg,#3f74d6,#355fb1); color:white; border-radius:10px; padding:8px 11px; font-weight:650; cursor:pointer; }
+    button.secondary { border-color:#41506a; background:linear-gradient(180deg,#222e44,#172033); color:#d5e1f7; }
+    button[disabled] { opacity:.6; cursor:not-allowed; }
+    .badge { display:inline-flex; border-radius:999px; padding:4px 8px; border:1px solid transparent; font-size:.72rem; text-transform:uppercase; font-weight:700; }
+    .badge.idle { color:#dbeafe; background:rgba(148,163,184,.18); border-color:rgba(148,163,184,.5); }
+    .badge.running { color:#fde68a; background:rgba(245,158,11,.2); border-color:rgba(245,158,11,.5); }
+    .badge.success { color:#bbf7d0; background:rgba(34,197,94,.2); border-color:rgba(34,197,94,.5); }
+    .badge.error { color:#fecaca; background:rgba(239,68,68,.2); border-color:rgba(239,68,68,.5); }
+    pre,.box { margin:0; background:#081326; border:1px solid #26406b; border-radius:10px; padding:9px; color:#cfe3ff; font-size:.78rem; white-space:pre-wrap; word-break:break-word; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>RW → GitHub → Railway Pipeline</h1>
-    <p class="subtitle">Describe your request, connect a GitHub source, generate or modify code, push to GitHub, deploy on Railway, and open the live app.</p>
-    <div class="top-actions">
-      <div class="mode-switch">
-        <button id="mode-build" class="mode-pill active" type="button">Build</button>
-        <button id="mode-scan" class="mode-pill" type="button">Scan Repository</button>
-      </div>
-      <button id="btn-refresh" class="secondary">Refresh Pipeline Status</button>
-      <span id="global-status" class="badge idle">Idle</span>
-      <label class="toggle-wrap"><input id="toggle-advanced" type="checkbox" /> Advanced (show raw JSON)</label>
+    <h1>RW GitHub → Railway Pipeline</h1>
+    <p class="subtitle">Strict top-down flow: Connect GitHub → Enter Prompt → Generate Code → Push to GitHub → Render Preview → Deploy to Railway → Open Live App.</p>
+    <div class="topbar">
+      <button id="btn-refresh" class="secondary" type="button">Refresh Status</button>
+      <span id="global-status" class="badge idle">idle</span>
     </div>
-    <section id="build-workspace" class="workspace">
-    <div class="pipeline">
-      <article class="stage active" data-stage="1">
-        <h2 class="stage-title">Describe Request <span class="stage-num">Stage 1</span><span class="stage-header-actions"><span id="badge-request" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="1" style="display:none;">Edit</button></span></h2>
-        <p class="meta">Tell RW what you want built or changed.</p>
-        <div class="stage-summary" id="summary-stage-1">No request entered yet.</div>
-        <div class="stage-content">
-          <div class="form">
-            <label>Build request
-              <textarea id="input-task">Build a minimal app and return deploy status.</textarea>
-            </label>
-          </div>
-        </div>
-        <div class="stage-nav">
-          <button id="btn-continue-1">Continue</button>
-        </div>
+
+    <section class="pipeline">
+      <article id="step-1" class="step"><h2>1) Connect GitHub <span id="badge-1" class="badge idle">idle</span></h2><p class="meta">Required first step.</p>
+        <label>Mode<select id="input-source-mode"><option value="existing">Existing Repo</option><option value="new">New Project</option></select></label>
+        <label>Repository URL<input id="input-repo-url" placeholder="https://github.com/owner/repo.git" /></label>
+        <label>Owner / Repo<input id="input-owner-repo" placeholder="owner/repo" /></label>
+        <label>Branch<input id="input-source-branch" value="main" /></label>
+        <div class="actions"><button id="btn-connect" type="button">Connect GitHub</button></div>
+        <pre id="json-source">{}</pre>
       </article>
-      <article class="stage minimized" data-stage="2">
-        <h2 class="stage-title">GitHub Source <span class="stage-num">Stage 2</span><span class="stage-header-actions"><span id="badge-source" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="2" style="display:none;">Edit</button></span></h2>
-        <p class="meta">Choose New Project or Existing Repo, then connect or load GitHub code.</p>
-        <div class="stage-summary" id="summary-stage-2">Source: not loaded.</div>
-        <div class="stage-content">
-          <div class="form">
-            <label>Mode
-              <select id="input-source-mode">
-                <option value="new">New Project</option>
-                <option value="existing">Existing Repo</option>
-              </select>
-            </label>
-            <label>Repository URL
-              <input id="input-repo-url" placeholder="https://github.com/owner/repo.git" />
-            </label>
-            <label>Owner / Repo
-              <input id="input-owner-repo" placeholder="owner/repo" />
-            </label>
-            <label>Branch
-              <input id="input-source-branch" value="main" />
-            </label>
-          </div>
-          <pre id="json-source" class="advanced-json">{}</pre>
-          <div class="meta" id="meta-source">Source: not loaded</div>
-          <div class="actions">
-            <button id="btn-pull">Pull Repository</button>
-          </div>
-        </div>
-        <div class="stage-nav">
-          <button id="btn-back-2" class="secondary">Back</button>
-          <button id="btn-continue-2">Continue</button>
-        </div>
+
+      <article id="step-2" class="step"><h2>2) Enter Prompt <span id="badge-2" class="badge idle">idle</span></h2><p class="meta">Save the exact generation prompt.</p>
+        <label>Prompt<textarea id="input-task">Build a minimal app and return deploy status.</textarea></label>
+        <div class="actions"><button id="btn-save-prompt" type="button">Save Prompt</button></div>
+        <div id="summary-prompt" class="box">No prompt saved.</div>
       </article>
-      <article class="stage minimized" data-stage="3">
-        <h2 class="stage-title">Generate / Modify Code <span class="stage-num">Stage 3</span><span class="stage-header-actions"><span id="badge-generate" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="3" style="display:none;">Edit</button></span></h2>
-        <p class="meta">Run RW generation for new projects or modifications for loaded repositories.</p>
-        <div class="stage-summary" id="summary-stage-3">Code action: pending.</div>
-        <div class="stage-content">
-          <pre id="json-generate" class="advanced-json">{}</pre>
-          <div class="meta" id="meta-generate">Repo: pending</div>
-          <div class="actions">
-            <button id="btn-run">Generate / Modify Code</button>
-          </div>
-        </div>
-        <div class="stage-nav">
-          <button id="btn-back-3" class="secondary">Back</button>
-          <button id="btn-continue-3">Continue</button>
-        </div>
+
+      <article id="step-3" class="step"><h2>3) Generate Code <span id="badge-3" class="badge idle">idle</span></h2><p class="meta">Runs /run and captures branch + commit.</p>
+        <div class="actions"><button id="btn-generate" type="button">Generate Code</button></div>
+        <pre id="json-generate">{}</pre>
       </article>
-      <article class="stage minimized" data-stage="5">
-        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 4</span><span class="stage-header-actions"><span id="badge-push" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="5" style="display:none;">Edit</button></span></h2>
-        <p class="meta">Simulated push details from branch and commit SHA.</p>
-        <div class="stage-summary" id="summary-stage-5">Push status: pending.</div>
-        <div class="stage-content">
-          <pre id="json-github" class="advanced-json">{}</pre>
-          <div class="meta" id="meta-github">Branch: pending · Commit: pending</div>
-        </div>
-        <div class="stage-nav">
-          <button id="btn-back-5" class="secondary">Back</button>
-          <button id="btn-continue-5">Continue</button>
-        </div>
+
+      <article id="step-4" class="step"><h2>4) Push to GitHub <span id="badge-4" class="badge idle">idle</span></h2><p class="meta">Push result from generated branch/commit.</p>
+        <div class="actions"><button id="btn-push" type="button">Push to GitHub</button></div>
+        <pre id="json-push">{}</pre>
       </article>
-      <article class="stage minimized" data-stage="6">
-        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 5</span><span class="stage-header-actions"><span id="badge-railway" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="6" style="display:none;">Edit</button></span></h2>
-        <p class="meta">Uses existing deployment trigger and status logic.</p>
-        <div class="stage-summary" id="summary-stage-6">Deploy status: pending.</div>
-        <div class="stage-content">
-          <div class="form dual">
-            <label>Project
-              <input id="input-project" value="demo-project" />
-            </label>
-            <label>Service
-              <input id="input-service" value="phone-runner" />
-            </label>
-            <label>Branch
-              <input id="input-branch" value="main" />
-            </label>
-            <label>Commit SHA
-              <input id="input-commitSha" value="0000000000000000000000000000000000000000" />
-            </label>
-          </div>
-          <pre id="json-deployment" class="advanced-json">{}</pre>
-          <div class="actions">
-            <button id="btn-trigger">Deploy on Railway</button>
-          </div>
-        </div>
-        <div class="stage-nav">
-          <button id="btn-back-6" class="secondary">Back</button>
-          <button id="btn-continue-6">Continue</button>
-        </div>
+
+      <article id="step-5" class="step"><h2>5) Render Preview <span id="badge-5" class="badge idle">idle</span></h2><p class="meta">Preview unlocks only after push succeeds.</p>
+        <div class="actions"><button id="btn-preview" type="button">Render Preview</button></div>
+        <div id="preview-summary" class="box">Preview not rendered.</div>
+        <pre id="json-preview">{}</pre>
       </article>
-    </div>
-    <aside class="watch-column">
-      <article class="watch-panel">
-        <h2 class="stage-title">Preview <span class="stage-header-actions"><span id="badge-preview" class="badge idle">idle</span></span></h2>
-        <p class="meta">Persistent visual preview that updates as you move through the workflow.</p>
-        <div class="stage-summary" id="summary-stage-4">Preview: not rendered.</div>
-        <div class="stage-content">
-          <div class="preview-board">
-            <div class="preview-header"></div>
-            <div class="preview-blocks">
-              <div class="preview-card">
-                <div class="preview-line"></div>
-                <div class="preview-line" style="width:82%"></div>
-                <div class="preview-line" style="width:66%"></div>
-                <div class="preview-line" style="width:54%"></div>
-              </div>
-              <div class="preview-sidebar">
-                <div class="preview-line"></div>
-                <div class="preview-line" style="width:76%"></div>
-                <div class="preview-line" style="width:62%"></div>
-              </div>
-            </div>
-          </div>
-          <div id="preview-summary" class="preview-summary">Preview summary will appear after generation.</div>
-          <pre id="json-preview" class="advanced-json">{}</pre>
-          <div class="actions">
-            <button id="btn-preview">Render Preview</button>
-          </div>
-        </div>
+
+      <article id="step-6" class="step"><h2>6) Deploy to Railway <span id="badge-6" class="badge idle">idle</span></h2><p class="meta">Triggers real deployment endpoint.</p>
+        <label>Project<input id="input-project" value="demo-project" /></label>
+        <label>Service<input id="input-service" value="phone-runner" /></label>
+        <label>Branch<input id="input-branch" value="main" /></label>
+        <label>Commit SHA<input id="input-commitSha" value="" /></label>
+        <div class="actions"><button id="btn-deploy" type="button">Deploy to Railway</button></div>
+        <pre id="json-deployment">{}</pre>
       </article>
-      <article class="watch-panel">
-        <h2 class="stage-title">Live App <span class="stage-header-actions"><span id="badge-live" class="badge idle">idle</span></span></h2>
-        <p class="meta">Final URL from the latest successful deployment.</p>
-        <div class="stage-summary" id="summary-stage-7">Live app: not available.</div>
-        <div class="stage-content">
-          <div id="live-url" class="url-box">No live URL yet.</div>
-          <pre id="json-route" class="advanced-json">{}</pre>
-          <div class="actions">
-            <button id="btn-open" class="secondary" disabled>Open Live App</button>
-          </div>
-        </div>
+
+      <article id="step-7" class="step"><h2>7) Open Live App <span id="badge-7" class="badge idle">idle</span></h2><p class="meta">Enabled only after successful deploy + URL.</p>
+        <div id="live-url" class="box">No live URL yet.</div>
+        <div class="actions"><button id="btn-open" class="secondary" type="button" disabled>Open Live App</button></div>
+        <pre id="json-route">{}</pre>
       </article>
-    </aside>
-    </section>
-    <section id="scan-workspace" class="scan-workspace">
-      <article class="watch-panel">
-        <h2 class="stage-title">Repository Scan <span class="stage-header-actions"><span id="badge-scan" class="badge idle">idle</span></span></h2>
-        <p class="meta">Analyze a repository independently from deployment. This mode does not trigger build/deploy.</p>
-        <div class="form">
-          <label>Repository URL
-            <input id="scan-repo-url" placeholder="https://github.com/owner/repo.git" />
-          </label>
-          <label>Owner / Repo
-            <input id="scan-owner-repo" placeholder="owner/repo" />
-          </label>
-          <label>Branch
-            <input id="scan-branch" value="main" />
-          </label>
-        </div>
-        <div class="actions">
-          <button id="btn-start-scan">Start Scan</button>
-          <button id="btn-follow-up" class="secondary" disabled>Create Follow-up Actions (Soon)</button>
-        </div>
-        <pre id="json-scan" class="advanced-json">{}</pre>
-      </article>
-      <div class="scan-results">
-        <article class="scan-section">
-          <h3>Project Summary</h3>
-          <ul id="scan-project-summary"><li class="scan-empty">Run a scan to generate project summary insights.</li></ul>
-        </article>
-        <article class="scan-section">
-          <h3>Stack Detection</h3>
-          <ul id="scan-stack-detection"><li class="scan-empty">Detected frameworks and tooling will appear here.</li></ul>
-        </article>
-        <article class="scan-section">
-          <h3>Key Files</h3>
-          <ul id="scan-key-files"><li class="scan-empty">Important files and architectural signals will appear here.</li></ul>
-        </article>
-        <article class="scan-section">
-          <h3>Risks</h3>
-          <ul id="scan-risks"><li class="scan-empty">Potential maintenance and reliability risks will appear here.</li></ul>
-        </article>
-        <article class="scan-section">
-          <h3>Recommendations</h3>
-          <ul id="scan-recommendations"><li class="scan-empty">Suggested next actions will appear here.</li></ul>
-        </article>
-      </div>
     </section>
   </div>
+
   <script>
-    function createInitDebugBadge() {
-      const badge = document.createElement('div');
-      badge.id = 'ui-init-debug';
-      badge.style.position = 'fixed';
-      badge.style.right = '10px';
-      badge.style.bottom = '10px';
-      badge.style.zIndex = '9999';
-      badge.style.padding = '6px 10px';
-      badge.style.borderRadius = '999px';
-      badge.style.fontSize = '12px';
-      badge.style.fontWeight = '600';
-      badge.style.letterSpacing = '0.02em';
-      badge.style.border = '1px solid rgba(255,255,255,0.15)';
-      badge.style.background = 'rgba(15,23,42,0.9)';
-      badge.style.color = '#bfdbfe';
-      badge.textContent = 'Initializing UI…';
-      document.body.appendChild(badge);
-      return badge;
-    }
-
-    function initDashboard() {
-      let firstInitError = null;
-      const debugBadge = createInitDebugBadge();
-      const setDebug = (text, isError) => {
-        if (!debugBadge) return;
-        debugBadge.textContent = text;
-        debugBadge.style.color = isError ? '#fecaca' : '#bbf7d0';
-        debugBadge.style.borderColor = isError ? 'rgba(239,68,68,0.55)' : 'rgba(34,197,94,0.55)';
-        debugBadge.style.background = isError ? 'rgba(127,29,29,0.88)' : 'rgba(20,83,45,0.88)';
-      };
-      const recordInitError = (label, err) => {
-        const message = String((err && err.message) || err || 'unknown error');
-        if (!firstInitError) {
-          firstInitError = '[' + label + '] ' + message;
-          setDebug('UI Init Error: ' + firstInitError, true);
-        }
-        console.error('[dashboard]', label, err);
-      };
-      const guarded = (label, fn, fallback = null) => {
-        try {
-          return fn();
-        } catch (err) {
-          recordInitError(label, err);
-          return fallback;
-        }
+    function initDashboard(){
+      const $ = (id) => document.getElementById(id);
+      const steps = [1,2,3,4,5,6,7];
+      const state = {
+        source:null, prompt:'', generated:null, pushed:null, preview:null, deployment:null, liveUrl:'',
+        statuses:{1:'idle',2:'idle',3:'idle',4:'idle',5:'idle',6:'idle',7:'idle'}
       };
 
-      const $ = (id) => guarded('getElementById:' + id, () => document.getElementById(id), null);
-      const bySelector = (selector) => guarded('querySelector:' + selector, () => document.querySelector(selector), null);
-      const bySelectorAll = (selector) => guarded('querySelectorAll:' + selector, () => Array.from(document.querySelectorAll(selector)), []);
-      const firstEl = (...ids) => ids.map((id) => $(id)).find(Boolean) || null;
-      const safeText = (id, text) => {
-        const el = $(id);
-        if (el) el.textContent = text;
+      const pretty = (v) => JSON.stringify(v ?? null, null, 2);
+      const setJson = (id,v) => { const el=$(id); if(el) el.textContent=pretty(v); };
+      const setBadge = (n,status) => {
+        const valid=['idle','running','success','error'];
+        const s=valid.includes(status)?status:'idle';
+        state.statuses[n]=s;
+        const el=$('badge-'+n); if(el){ el.className='badge '+s; el.textContent=s; }
       };
-      const safeValue = (id, fallback = '') => {
-        const el = $(id);
-        if (!el) return fallback;
-        return typeof el.value === 'string' ? el.value : fallback;
-      };
-      const safeTrim = (id, fallback = '') => String(safeValue(id, fallback) || '').trim();
-      const safeChecked = (id) => {
-        const el = $(id);
-        return !!(el && 'checked' in el && el.checked);
-      };
-      const safeBind = (el, event, handler) => {
-        if (!el || typeof el.addEventListener !== 'function') return false;
-        el.addEventListener(event, (e) => {
-          try {
-            const maybePromise = handler(e);
-            if (maybePromise && typeof maybePromise.catch === 'function') {
-              maybePromise.catch((err) => recordInitError('handler:' + event, err));
-            }
-          } catch (err) {
-            recordInitError('handler:' + event, err);
-          }
-        });
-        return true;
-      };
-      const safeBindFirst = (event, handler, ...ids) => safeBind(firstEl(...ids), event, handler);
-
-      let latestLiveUrl = '';
-      let activeStage = 1;
-      let topLevelMode = 'build';
-      const LEFT_STAGES = [1, 2, 3, 5, 6];
-      const completedStages = new Set();
-
-      function stageEl(index) {
-        return bySelector('.stage[data-stage="' + index + '"]');
-      }
-      function normalizeOwnerRepo(raw) {
-        const text = String(raw || '').trim().replace(/^\/+|\/+$/g, '');
-        if (!text) return '';
-        const parts = text.split('/').filter(Boolean);
-        if (parts.length < 2) return text;
-        return parts[0] + '/' + parts[1].replace(/\.git$/, '');
-      }
-      function parseRepoUrl(repoUrl) {
-        const raw = String(repoUrl || '').trim();
-        if (!raw) return '';
-        const match = raw.match(/github\.com[:/](.+?)(?:\.git)?$/i);
-        return match ? normalizeOwnerRepo(match[1]) : '';
-      }
-      function getSourceState() {
-        const mode = safeValue('input-source-mode', 'existing');
-        const repoUrl = safeTrim('input-repo-url');
-        const ownerRepoInput = safeTrim('input-owner-repo');
-        const parsedFromUrl = parseRepoUrl(repoUrl);
-        const ownerRepo = normalizeOwnerRepo(ownerRepoInput || parsedFromUrl);
-        const branch = safeTrim('input-source-branch', 'main') || 'main';
-        return { mode, repoUrl, ownerRepo, branch };
-      }
-      function updateStageSummaries() {
-        const task = safeTrim('input-task');
-        safeText('summary-stage-1', task ? ('Request: ' + task.slice(0, 120)) : 'No request entered yet.');
-        const source = getSourceState();
-        safeText('summary-stage-2', source.mode === 'new'
-          ? 'New project' + (source.ownerRepo ? ' → ' + source.ownerRepo : '') + ' · ' + source.branch
-          : (source.ownerRepo ? ('Existing repo: ' + source.ownerRepo + ' · ' + source.branch) : 'Existing repo not loaded.'));
-        safeText('summary-stage-3', (($('meta-generate') && $('meta-generate').textContent) || 'Code action: pending.'));
-        safeText('summary-stage-4', (($('preview-summary') && $('preview-summary').textContent) || 'Preview: not rendered.'));
-        safeText('summary-stage-5', (($('meta-github') && $('meta-github').textContent) || 'Push status: pending.'));
-        const deployStatus = (($('badge-railway') && $('badge-railway').textContent) || 'idle');
-        safeText('summary-stage-6', 'Deploy status: ' + deployStatus + ' · ' + safeTrim('input-project') + '/' + safeTrim('input-service'));
-        safeText('summary-stage-7', latestLiveUrl ? ('Live app: ' + latestLiveUrl) : 'Live app: not available.');
-      }
-      function markStageCompleted(index, done = true) {
-        if (done) completedStages.add(index);
-        else completedStages.delete(index);
-        const editBtn = bySelector('.btn-edit-stage[data-target-stage="' + index + '"]');
-        if (editBtn) editBtn.style.display = completedStages.has(index) ? '' : 'none';
-      }
-      function goToStage(index) {
-        const requested = Math.max(1, Math.min(6, Number(index) || 1));
-        const fallback = LEFT_STAGES.includes(requested)
-          ? requested
-          : LEFT_STAGES.reduce((best, current) => (Math.abs(current - requested) < Math.abs(best - requested) ? current : best), LEFT_STAGES[0]);
-        activeStage = fallback;
-        bySelectorAll('.stage[data-stage]').forEach((el) => {
-          const idx = Number(el && el.dataset ? el.dataset.stage : 0);
-          const isActive = idx === activeStage;
-          if (el && el.classList) {
-            el.classList.toggle('active', isActive);
-            el.classList.toggle('minimized', !isActive);
-          }
-        });
-        const taskInput = $('input-task');
-        if (taskInput) taskInput.readOnly = activeStage !== 1;
-        updateStageSummaries();
-      }
-      function continueStage(index) {
-        markStageCompleted(index, true);
-        const current = LEFT_STAGES.indexOf(index);
-        const next = current >= 0 ? LEFT_STAGES[Math.min(current + 1, LEFT_STAGES.length - 1)] : LEFT_STAGES[0];
-        goToStage(next);
-      }
-      function backStage(index) {
-        const current = LEFT_STAGES.indexOf(index);
-        const prev = current > 0 ? LEFT_STAGES[current - 1] : LEFT_STAGES[0];
-        goToStage(prev);
-      }
-
-      function pretty(value) {
-        return JSON.stringify(value ?? null, null, 2);
-      }
-      function setJson(id, payload) {
-        const el = $(id);
-        if (el) el.textContent = pretty(payload);
-      }
-      function setStageState(id, state) {
-        const el = $(id);
-        if (!el) return;
-        const normalized = ['idle', 'running', 'success', 'failed'].includes(state) ? state : 'idle';
-        el.textContent = normalized;
-        el.className = 'badge ' + normalized;
-      }
-      function setGlobalState(state, label) {
-        const el = $('global-status');
-        if (!el) return;
-        const normalized = ['idle', 'running', 'success', 'failed'].includes(state) ? state : 'idle';
-        el.textContent = label || normalized;
-        el.className = 'badge ' + normalized;
-      }
-      function setLiveUrl(url) {
-        latestLiveUrl = String(url || '').trim();
-        safeText('live-url', latestLiveUrl || 'No live URL yet.');
-        const openBtn = firstEl('btn-open', 'btn-open-live-app');
-        if (openBtn) openBtn.disabled = !latestLiveUrl;
-        setStageState('badge-live', latestLiveUrl ? 'success' : 'idle');
-        updateStageSummaries();
-      }
-      function buildPreviewSummary() {
-        const task = safeTrim('input-task');
-        const source = getSourceState();
-        const branch = safeTrim('input-branch') || source.branch || 'main';
-        const scope = source.mode === 'new' ? 'a new project' : (source.ownerRepo || 'the selected repository');
-        if (!task) return 'Preparing a UI-focused update for ' + scope + ' on branch ' + branch + '.';
-        return 'Building ' + scope + ' on branch ' + branch + ': ' + task.slice(0, 180);
-      }
-      async function renderPreview() {
-        const previewBtn = firstEl('btn-preview', 'btn-render-preview');
-        if (previewBtn) previewBtn.disabled = true;
-        try {
-          setStageState('badge-preview', 'running');
-          setGlobalState('running', 'Rendering preview');
-          const summary = buildPreviewSummary();
-          await new Promise((resolve) => setTimeout(resolve, 350));
-          const previewPayload = { generatedAt: new Date().toISOString(), summary, layout: 'mock-ui', status: 'preview_ready' };
-          safeText('preview-summary', summary);
-          setJson('json-preview', previewPayload);
-          setStageState('badge-preview', 'success');
-          setGlobalState('idle', 'Preview ready');
-          markStageCompleted(4, true);
-          updateStageSummaries();
-        } finally {
-          if (previewBtn) previewBtn.disabled = false;
-        }
-      }
-      async function fetchJson(url, options) {
-        const res = await fetch(url, options);
-        const data = await res.json().catch(() => ({}));
-        return { ok: res.ok, status: res.status, data };
-      }
-      function shortCommit(sha) {
-        const text = String(sha || '').trim();
-        return text ? text.slice(0, 7) : 'pending';
-      }
-      function setList(id, items) {
-        const el = $(id);
-        if (!el) return;
-        el.innerHTML = '';
-        const values = Array.isArray(items) ? items.filter(Boolean) : [];
-        if (!values.length) {
-          el.innerHTML = '<li class="scan-empty">No findings yet.</li>';
-          return;
-        }
-        values.forEach((item) => {
-          const li = document.createElement('li');
-          li.textContent = String(item);
-          el.appendChild(li);
-        });
-      }
-      function setTopMode(mode) {
-        topLevelMode = mode === 'scan' ? 'scan' : 'build';
-        const buildWorkspace = $('build-workspace');
-        const scanWorkspace = $('scan-workspace');
-        if (buildWorkspace) buildWorkspace.style.display = topLevelMode === 'build' ? 'grid' : 'none';
-        if (scanWorkspace) scanWorkspace.style.display = topLevelMode === 'scan' ? 'grid' : 'none';
-        const buildBtn = firstEl('mode-build', 'btn-build');
-        const scanBtn = firstEl('mode-scan', 'btn-scan-repository');
-        if (buildBtn && buildBtn.classList) buildBtn.classList.toggle('active', topLevelMode === 'build');
-        if (scanBtn && scanBtn.classList) scanBtn.classList.toggle('active', topLevelMode === 'scan');
-        const refreshBtn = firstEl('btn-refresh', 'btn-refresh-pipeline-status');
-        if (refreshBtn) refreshBtn.disabled = topLevelMode === 'scan';
-        setGlobalState('idle', topLevelMode === 'scan' ? 'Scan mode' : 'Idle');
-      }
-      function getScanState() {
-        const repoUrl = safeTrim('scan-repo-url');
-        const ownerRepo = normalizeOwnerRepo(safeTrim('scan-owner-repo') || parseRepoUrl(repoUrl));
-        const branch = safeTrim('scan-branch', 'main') || 'main';
-        return { repoUrl, ownerRepo, branch };
-      }
-      async function startRepoScan() {
-        const scan = getScanState();
-        if (!scan.ownerRepo && !scan.repoUrl) {
-          setStageState('badge-scan', 'failed');
-          setJson('json-scan', { error: 'Repository URL or owner/repo is required.' });
-          setGlobalState('failed', 'Scan failed');
-          return;
-        }
-        const scanBtn = firstEl('btn-start-scan', 'btn-scan-start');
-        if (scanBtn) scanBtn.disabled = true;
-        try {
-          setStageState('badge-scan', 'running');
-          setGlobalState('running', 'Scanning repository');
-          await new Promise((resolve) => setTimeout(resolve, 450));
-          const repoLabel = scan.ownerRepo || 'repository';
-          const findings = {
-            mode: 'scan_repository',
-            scannedAt: new Date().toISOString(),
-            repositoryUrl: scan.repoUrl || null,
-            ownerRepo: scan.ownerRepo || null,
-            branch: scan.branch,
-            projectSummary: [
-              repoLabel + ' analyzed on branch ' + scan.branch + '.',
-              'Repository appears ready for deeper architectural and quality checks.',
-              'No deployment actions were triggered in scan mode.',
-            ],
-            stackDetection: [
-              'Primary stack detection is pending backend scan integration.',
-              'Frontend and server runtime indicators will be surfaced in this section.',
-            ],
-            keyFiles: [
-              'package.json / equivalent manifest',
-              'README and setup docs',
-              'Primary application entry points',
-            ],
-            risks: [
-              'Dependency and security risk scoring will be added in follow-up.',
-              'Configuration drift checks are planned for a later backend pass.',
-            ],
-            recommendations: [
-              'Enable backend-powered file parsing for concrete stack detection.',
-              'Convert findings into tasks using follow-up actions once available.',
-            ],
-            followUpActionsAvailable: false,
-          };
-          setJson('json-scan', findings);
-          setList('scan-project-summary', findings.projectSummary);
-          setList('scan-stack-detection', findings.stackDetection);
-          setList('scan-key-files', findings.keyFiles);
-          setList('scan-risks', findings.risks);
-          setList('scan-recommendations', findings.recommendations);
-          setStageState('badge-scan', 'success');
-          setGlobalState('success', 'Scan complete');
-        } finally {
-          if (scanBtn) scanBtn.disabled = false;
-        }
-      }
-      async function pullRepository() {
-        const pullBtn = firstEl('btn-pull', 'btn-pull-repository');
-        if (pullBtn) pullBtn.disabled = true;
-        try {
-          setStageState('badge-source', 'running');
-          setGlobalState('running', 'Loading GitHub source');
-          const source = getSourceState();
-          if (!source.ownerRepo && source.mode === 'existing') {
-            const err = { error: 'Owner/repo is required for Existing Repo mode.' };
-            setJson('json-source', err);
-            safeText('meta-source', err.error);
-            setStageState('badge-source', 'failed');
-            setGlobalState('failed', 'Source load failed');
-            updateStageSummaries();
-            return;
-          }
-
-          const details = {
-            loaded: true,
-            mode: source.mode,
-            repositoryUrl: source.repoUrl || null,
-            ownerRepo: source.ownerRepo || null,
-            branch: source.branch,
-            sourceStatus: source.mode === 'new' ? 'new_project_ready' : 'repository_loaded',
-          };
-          setJson('json-source', details);
-          const ownerInput = $('input-owner-repo');
-          const branchInput = $('input-branch');
-          if (ownerInput) ownerInput.value = source.ownerRepo;
-          if (branchInput) branchInput.value = source.branch;
-          safeText('meta-source', source.mode === 'new'
-            ? 'New Project ready' + (source.ownerRepo ? ' · Target: ' + source.ownerRepo : '') + ' · Branch: ' + source.branch
-            : 'Loaded: ' + source.ownerRepo + ' · Branch: ' + source.branch);
-          setStageState('badge-source', 'success');
-          setGlobalState('idle', 'Source ready');
-          markStageCompleted(2, true);
-          updateStageSummaries();
-        } finally {
-          if (pullBtn) pullBtn.disabled = false;
-        }
-      }
-      async function refreshRouteAndDeployment() {
-        const routeResult = await fetchJson('/route');
-        setJson('json-route', routeResult.data);
-        const liveFromRoute = Array.isArray(routeResult.data && routeResult.data.routes) && routeResult.data.routes[0]
-          ? 'http://' + routeResult.data.routes[0].domain
-          : '';
-
-        const depResult = await fetchJson('/deployments/latest');
-        setJson('json-deployment', depResult.data);
-        const dep = depResult.data || {};
-        const depStatus = String(dep.status || '').toLowerCase();
-        if (depStatus === 'success') setStageState('badge-railway', 'success');
-        else if (depStatus === 'failed') setStageState('badge-railway', 'failed');
-        else if (depStatus) setStageState('badge-railway', 'running');
-        else setStageState('badge-railway', 'idle');
-
-        setLiveUrl(dep.url || liveFromRoute || '');
-        updateStageSummaries();
-      }
-      async function runGenerate() {
-        const runBtn = firstEl('btn-run', 'btn-generate');
-        if (runBtn) runBtn.disabled = true;
-        try {
-          setStageState('badge-request', 'success');
-          const source = getSourceState();
-          if (!source.ownerRepo && source.mode === 'existing') {
-            setJson('json-source', { error: 'Load an existing repository in GitHub Source before generating.' });
-            safeText('meta-source', 'Source: existing repo not loaded');
-            setStageState('badge-source', 'failed');
-            setStageState('badge-generate', 'failed');
-            setGlobalState('failed', 'Flow failed');
-            updateStageSummaries();
-            return;
-          }
-          if (source.ownerRepo || source.repoUrl || source.mode === 'new') setStageState('badge-source', 'success');
-
-          setStageState('badge-generate', 'running');
-          setStageState('badge-preview', 'idle');
-          setStageState('badge-push', 'idle');
-          setStageState('badge-live', 'idle');
-          setGlobalState('running', 'Flow running');
-
-          const payload = { task: safeTrim('input-task') || 'Echo a short status update and exit.' };
-          try {
-            const result = await fetchJson('/run', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-            });
-            setJson('json-generate', result.data);
-            if (!result.ok || !result.data || result.data.success === false) {
-              setStageState('badge-generate', 'failed');
-              setStageState('badge-push', 'failed');
-              setGlobalState('failed', 'Flow failed');
-              updateStageSummaries();
-              return;
-            }
-            setStageState('badge-generate', 'success');
-            const branch = String(result.data.branch || source.branch || safeValue('input-branch', 'main') || 'main');
-            const branchInput = $('input-branch');
-            if (branchInput) branchInput.value = branch;
-            const commitInput = $('input-commitSha');
-            const commitSha = String(result.data.commit_sha || safeTrim('input-commitSha')).trim();
-            if (commitInput && commitSha) commitInput.value = commitSha;
-            const displayRepo = source.ownerRepo || (location.hostname || 'local');
-            safeText('meta-generate', 'Repo: ' + displayRepo + ' · Branch: ' + branch);
-
-            const githubData = {
-              repo: displayRepo || 'local-repo',
-              branch,
-              commit: commitSha,
-              commitMessage: result.data.commit_message || 'Generated by RW pipeline',
-              status: 'pushed',
-            };
-            setJson('json-github', githubData);
-            safeText('preview-summary', buildPreviewSummary());
-            setJson('json-preview', {
-              generatedAt: new Date().toISOString(),
-              status: 'pending_render',
-              summary: buildPreviewSummary(),
-            });
-            safeText('meta-github', 'Branch: ' + branch + ' · Commit: ' + shortCommit(commitSha));
-            setStageState('badge-push', 'success');
-            setGlobalState('running', 'Ready to preview and deploy');
-            markStageCompleted(3, true);
-            markStageCompleted(5, true);
-            updateStageSummaries();
-          } catch (err) {
-            setJson('json-generate', { error: String((err && err.message) || err) });
-            setStageState('badge-generate', 'failed');
-            setStageState('badge-push', 'failed');
-            setGlobalState('failed', 'Flow failed');
-            updateStageSummaries();
-          }
-        } finally {
-          if (runBtn) runBtn.disabled = false;
-        }
-      }
-      async function triggerDeployment() {
-        const button = firstEl('btn-trigger', 'btn-deploy-railway');
-        if (button) button.disabled = true;
-        setStageState('badge-railway', 'running');
-        setGlobalState('running', 'Deploying on Railway');
-        const payload = {
-          project: safeTrim('input-project'),
-          service: safeTrim('input-service'),
-          branch: safeTrim('input-branch'),
-          commitSha: safeTrim('input-commitSha'),
+      const setGlobal = (status,label) => { const el=$('global-status'); if(el){ el.className='badge '+status; el.textContent=label||status; } };
+      const updateLocks = () => {
+        const unlocked = {
+          1:true,
+          2:state.statuses[1]==='success',
+          3:state.statuses[2]==='success',
+          4:state.statuses[3]==='success',
+          5:state.statuses[4]==='success',
+          6:state.statuses[5]==='success',
+          7:state.statuses[6]==='success' && !!state.liveUrl,
         };
-        try {
-          const result = await fetchJson('/deployments/trigger', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          setJson('json-deployment', result.data);
-          setStageState('badge-railway', result.ok ? 'success' : 'failed');
-          await refreshRouteAndDeployment();
-          setGlobalState(result.ok ? 'success' : 'failed', result.ok ? 'Pipeline ready' : 'Deploy failed');
-          markStageCompleted(6, !!result.ok);
-          markStageCompleted(7, !!result.ok && !!latestLiveUrl);
-          updateStageSummaries();
-        } catch (err) {
-          setJson('json-deployment', { error: String((err && err.message) || err) });
-          setStageState('badge-railway', 'failed');
-          setGlobalState('failed', 'Deploy failed');
-          updateStageSummaries();
-        } finally {
-          if (button) button.disabled = false;
-        }
-      }
-      async function refreshAll() {
-        setGlobalState('running', 'Refreshing');
-        try {
-          await refreshRouteAndDeployment();
-          const health = await fetchJson('/health');
-          const worker = !!(health.data && health.data.workerConfigured);
-          if (!worker) setStageState('badge-request', 'idle');
-          setGlobalState('idle', 'Idle');
-          updateStageSummaries();
-        } catch (err) {
-          setJson('json-github', { error: String((err && err.message) || err) });
-          setGlobalState('failed', 'Refresh failed');
-          updateStageSummaries();
-        }
-      }
-      function openLiveApp() {
-        if (latestLiveUrl) window.open(latestLiveUrl, '_blank', 'noopener');
-      }
-
-      guarded('bind:toggle-advanced', () => safeBind(firstEl('toggle-advanced'), 'change', () => {
-        document.body.classList.toggle('show-advanced', safeChecked('toggle-advanced'));
-      }));
-      guarded('bind:mode-build', () => safeBindFirst('click', () => setTopMode('build'), 'mode-build', 'btn-build'));
-      guarded('bind:mode-scan', () => safeBindFirst('click', () => setTopMode('scan'), 'mode-scan', 'btn-scan-repository'));
-      guarded('bind:start-scan', () => safeBindFirst('click', startRepoScan, 'btn-start-scan', 'btn-scan-start'));
-      guarded('bind:run-generate', () => safeBindFirst('click', runGenerate, 'btn-run', 'btn-generate'));
-      guarded('bind:render-preview', () => safeBindFirst('click', renderPreview, 'btn-preview', 'btn-render-preview'));
-      guarded('bind:pull-repository', () => safeBindFirst('click', pullRepository, 'btn-pull', 'btn-pull-repository'));
-      guarded('bind:trigger-deploy', () => safeBindFirst('click', triggerDeployment, 'btn-trigger', 'btn-deploy-railway'));
-      guarded('bind:refresh', () => safeBindFirst('click', refreshAll, 'btn-refresh', 'btn-refresh-pipeline-status'));
-      guarded('bind:open-live', () => safeBindFirst('click', openLiveApp, 'btn-open', 'btn-open-live-app'));
-
-      guarded('bind:continue-1', () => safeBind(firstEl('btn-continue-1'), 'click', () => {
-        setStageState('badge-request', 'success');
-        markStageCompleted(1, true);
-        continueStage(1);
-      }));
-      guarded('bind:continue-2', () => safeBind(firstEl('btn-continue-2'), 'click', () => continueStage(2)));
-      guarded('bind:continue-3', () => safeBind(firstEl('btn-continue-3'), 'click', () => continueStage(3)));
-      guarded('bind:continue-5', () => safeBind(firstEl('btn-continue-5'), 'click', () => continueStage(5)));
-      guarded('bind:continue-6', () => safeBind(firstEl('btn-continue-6'), 'click', () => continueStage(6)));
-      guarded('bind:back-2', () => safeBind(firstEl('btn-back-2'), 'click', () => backStage(2)));
-      guarded('bind:back-3', () => safeBind(firstEl('btn-back-3'), 'click', () => backStage(3)));
-      guarded('bind:back-5', () => safeBind(firstEl('btn-back-5'), 'click', () => backStage(5)));
-      guarded('bind:back-6', () => safeBind(firstEl('btn-back-6'), 'click', () => backStage(6)));
-
-      guarded('bind:edit-buttons', () => {
-        bySelectorAll('.btn-edit-stage').forEach((button) => {
-          safeBind(button, 'click', () => goToStage(Number((button && button.dataset && button.dataset.targetStage) || 1)));
-        });
-      });
-
-      guarded('bind:summary-inputs', () => {
-        ['input-task', 'input-repo-url', 'input-owner-repo', 'input-source-branch', 'input-project', 'input-service', 'input-branch', 'input-commitSha']
-          .forEach((id) => {
-            const el = $(id);
-            if (el) safeBind(el, 'input', updateStageSummaries);
-          });
-      });
-
-      guarded('bind:scan-inputs', () => {
-        ['scan-repo-url', 'scan-owner-repo', 'scan-branch'].forEach((id) => {
-          const el = $(id);
-          if (!el) return;
-          safeBind(el, 'input', () => {
-            if (id !== 'scan-owner-repo') {
-              const ownerInput = $('scan-owner-repo');
-              if (ownerInput) ownerInput.value = getScanState().ownerRepo;
-            }
+        steps.forEach((n)=>{
+          const step=$('step-'+n);
+          if(step) step.classList.toggle('locked', !unlocked[n]);
+          step && step.querySelectorAll('button,input,textarea,select').forEach((el)=>{
+            if (el.id==='btn-refresh') return;
+            if (el.id==='btn-open') { el.disabled = !unlocked[7]; return; }
+            const isAction = el.tagName==='BUTTON';
+            if (isAction) el.disabled = !unlocked[n];
           });
         });
-      });
+      };
+      const ownerRepoFromUrl = (repoUrl) => {
+        const m = String(repoUrl||'').trim().match(/github\.com[:/](.+?)(?:\.git)?$/i);
+        if(!m) return '';
+        const parts=m[1].replace(/^\/+|\/+$/g,'').split('/').filter(Boolean);
+        return parts.length>=2 ? (parts[0]+'/'+parts[1].replace(/\.git$/,'')) : '';
+      };
 
-      guarded('bind:source-mode', () => safeBind(firstEl('input-source-mode'), 'change', updateStageSummaries));
-
-      guarded('init:stage', () => {
-        if (stageEl(1)) goToStage(1);
-      });
-      guarded('init:mode', () => setTopMode('build'));
-      guarded('init:refresh', () => refreshAll().catch((err) => recordInitError('initial refresh', err)));
-
-      if (!firstInitError) {
-        setDebug('UI Ready', false);
+      async function fetchJson(url, options){
+        const res = await fetch(url, options);
+        const data = await res.json().catch(()=>({}));
+        return { ok:res.ok, data, status:res.status };
       }
+
+      async function connectGithub(){
+        setBadge(1,'running'); setGlobal('running','Connecting GitHub');
+        const mode = $('input-source-mode').value;
+        const repoUrl = $('input-repo-url').value.trim();
+        const ownerRepo = ($('input-owner-repo').value.trim() || ownerRepoFromUrl(repoUrl)).replace(/^\/+|\/+$/g,'');
+        const branch = $('input-source-branch').value.trim() || 'main';
+        if(mode==='existing' && !ownerRepo){
+          const err={ error:'Owner/repo required in Existing Repo mode.' };
+          setJson('json-source', err); setBadge(1,'error'); setGlobal('error','Connect failed'); updateLocks(); return;
+        }
+        state.source={ mode, repoUrl:repoUrl||null, ownerRepo:ownerRepo||null, branch, connectedAt:new Date().toISOString() };
+        $('input-owner-repo').value = ownerRepo;
+        $('input-branch').value = branch;
+        setJson('json-source', { ...state.source, status:'connected' });
+        setBadge(1,'success'); setGlobal('success','GitHub connected'); updateLocks();
+      }
+
+      function savePrompt(){
+        setBadge(2,'running');
+        const prompt = $('input-task').value.trim();
+        if(!prompt){ setBadge(2,'error'); setGlobal('error','Prompt required'); updateLocks(); return; }
+        state.prompt = prompt;
+        $('summary-prompt').textContent = prompt;
+        setBadge(2,'success'); setGlobal('success','Prompt saved'); updateLocks();
+      }
+
+      async function generateCode(){
+        setBadge(3,'running'); setGlobal('running','Generating code');
+        const payload = { task: state.prompt };
+        const result = await fetchJson('/run',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+        setJson('json-generate', result.data);
+        if(!result.ok || !result.data || result.data.success===false){ setBadge(3,'error'); setGlobal('error','Generation failed'); updateLocks(); return; }
+        state.generated = result.data;
+        const branch = String(result.data.branch || state.source?.branch || 'main');
+        const commit = String(result.data.commit_sha || '').trim();
+        $('input-branch').value = branch;
+        if(commit) $('input-commitSha').value = commit;
+        setBadge(3,'success'); setGlobal('success','Code generated'); updateLocks();
+      }
+
+      function pushGithub(){
+        setBadge(4,'running'); setGlobal('running','Pushing to GitHub');
+        if(!state.generated){ setBadge(4,'error'); setGlobal('error','Generate code first'); updateLocks(); return; }
+        const pushedAt = new Date().toISOString();
+        state.pushed = {
+          repo: state.source?.ownerRepo || 'local-repo',
+          branch: $('input-branch').value.trim() || 'main',
+          commit: $('input-commitSha').value.trim() || state.generated.commit_sha || null,
+          message: state.generated.commit_message || 'Generated by RW pipeline',
+          pushedAt,
+          status:'pushed'
+        };
+        setJson('json-push', state.pushed);
+        setBadge(4,'success'); setGlobal('success','Push complete'); updateLocks();
+      }
+
+      async function renderPreview(){
+        setBadge(5,'running'); setGlobal('running','Rendering preview');
+        const summary = 'Preview from '+(state.pushed?.repo||'repo')+' @ '+(state.pushed?.branch||'main')+' • '+(state.prompt||'no prompt');
+        await new Promise(r=>setTimeout(r,250));
+        state.preview = { renderedAt:new Date().toISOString(), summary, commit:state.pushed?.commit || null, status:'ready' };
+        $('preview-summary').textContent = summary;
+        setJson('json-preview', state.preview);
+        setBadge(5,'success'); setGlobal('success','Preview ready'); updateLocks();
+      }
+
+      async function deployRailway(){
+        setBadge(6,'running'); setGlobal('running','Deploying to Railway');
+        const payload = {
+          project: $('input-project').value.trim(),
+          service: $('input-service').value.trim(),
+          branch: $('input-branch').value.trim(),
+          commitSha: $('input-commitSha').value.trim(),
+        };
+        const result = await fetchJson('/deployments/trigger',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+        setJson('json-deployment', result.data);
+        if(!result.ok){ setBadge(6,'error'); setGlobal('error','Deploy failed'); state.liveUrl=''; $('live-url').textContent='No live URL yet.'; setBadge(7,'idle'); updateLocks(); return; }
+        const route = await fetchJson('/route');
+        setJson('json-route', route.data);
+        const liveFromRoute = Array.isArray(route.data?.routes) && route.data.routes[0] ? ('http://' + route.data.routes[0].domain) : '';
+        state.liveUrl = String(result.data?.url || liveFromRoute || '').trim();
+        $('live-url').textContent = state.liveUrl || 'No live URL yet.';
+        setBadge(6, state.liveUrl ? 'success' : 'error');
+        setBadge(7, state.liveUrl ? 'success' : 'idle');
+        setGlobal(state.liveUrl ? 'success' : 'error', state.liveUrl ? 'Deploy success' : 'Deploy missing URL');
+        updateLocks();
+      }
+
+      function openLive(){
+        if(!state.liveUrl) return;
+        setBadge(7,'running');
+        window.open(state.liveUrl, '_blank', 'noopener');
+        setBadge(7,'success');
+        setGlobal('success','Live app opened');
+      }
+
+      async function refreshStatus(){
+        setGlobal('running','Refreshing');
+        const route = await fetchJson('/route');
+        setJson('json-route', route.data);
+        if(!state.liveUrl){
+          const liveFromRoute = Array.isArray(route.data?.routes) && route.data.routes[0] ? ('http://' + route.data.routes[0].domain) : '';
+          if(liveFromRoute && state.statuses[6]==='success'){ state.liveUrl = liveFromRoute; $('live-url').textContent=liveFromRoute; }
+        }
+        updateLocks();
+        setGlobal('idle','idle');
+      }
+
+      $('btn-connect').addEventListener('click', connectGithub);
+      $('btn-save-prompt').addEventListener('click', savePrompt);
+      $('btn-generate').addEventListener('click', generateCode);
+      $('btn-push').addEventListener('click', pushGithub);
+      $('btn-preview').addEventListener('click', renderPreview);
+      $('btn-deploy').addEventListener('click', deployRailway);
+      $('btn-open').addEventListener('click', openLive);
+      $('btn-refresh').addEventListener('click', refreshStatus);
+
+      updateLocks();
+      refreshStatus().catch(()=>{});
     }
 
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', initDashboard, { once: true });
-    } else {
-      initDashboard();
-    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initDashboard, { once:true });
+    else initDashboard();
   </script>
-
-
 </body>
 </html>`;
 }
