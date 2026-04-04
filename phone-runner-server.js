@@ -628,7 +628,7 @@ function renderDashboardHtml() {
         </div>
       </article>
       <article class="stage minimized" data-stage="2">
-        <h2 class="stage-title">GitHub Source <span class="stage-num">Stage 2</span><span class="stage-header-actions"><span id="badge-source" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="2">Edit</button></span></h2>
+        <h2 class="stage-title">GitHub Source <span class="stage-num">Stage 2</span><span class="stage-header-actions"><span id="badge-source" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="2" style="display:none;">Edit</button></span></h2>
         <p class="meta">Choose New Project or Existing Repo, then connect or load GitHub code.</p>
         <div class="stage-summary" id="summary-stage-2">Source: not loaded.</div>
         <div class="stage-content">
@@ -661,7 +661,7 @@ function renderDashboardHtml() {
         </div>
       </article>
       <article class="stage minimized" data-stage="3">
-        <h2 class="stage-title">Generate / Modify Code <span class="stage-num">Stage 3</span><span class="stage-header-actions"><span id="badge-generate" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="3">Edit</button></span></h2>
+        <h2 class="stage-title">Generate / Modify Code <span class="stage-num">Stage 3</span><span class="stage-header-actions"><span id="badge-generate" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="3" style="display:none;">Edit</button></span></h2>
         <p class="meta">Run RW generation for new projects or modifications for loaded repositories.</p>
         <div class="stage-summary" id="summary-stage-3">Code action: pending.</div>
         <div class="stage-content">
@@ -677,7 +677,7 @@ function renderDashboardHtml() {
         </div>
       </article>
       <article class="stage minimized" data-stage="5">
-        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 4</span><span class="stage-header-actions"><span id="badge-push" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="5">Edit</button></span></h2>
+        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 4</span><span class="stage-header-actions"><span id="badge-push" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="5" style="display:none;">Edit</button></span></h2>
         <p class="meta">Simulated push details from branch and commit SHA.</p>
         <div class="stage-summary" id="summary-stage-5">Push status: pending.</div>
         <div class="stage-content">
@@ -690,7 +690,7 @@ function renderDashboardHtml() {
         </div>
       </article>
       <article class="stage minimized" data-stage="6">
-        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 5</span><span class="stage-header-actions"><span id="badge-railway" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="6">Edit</button></span></h2>
+        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 5</span><span class="stage-header-actions"><span id="badge-railway" class="badge idle">idle</span><button class="secondary btn-edit-stage" data-target-stage="6" style="display:none;">Edit</button></span></h2>
         <p class="meta">Uses existing deployment trigger and status logic.</p>
         <div class="stage-summary" id="summary-stage-6">Deploy status: pending.</div>
         <div class="stage-content">
@@ -1033,48 +1033,48 @@ function renderDashboardHtml() {
         const scanBtn = firstEl('btn-start-scan', 'btn-scan-start');
         if (scanBtn) scanBtn.disabled = true;
         try {
-        setStageState('badge-scan', 'running');
-        setGlobalState('running', 'Scanning repository');
-        await new Promise((resolve) => setTimeout(resolve, 450));
-        const repoLabel = scan.ownerRepo || 'repository';
-        const findings = {
-          mode: 'scan_repository',
-          scannedAt: new Date().toISOString(),
-          repositoryUrl: scan.repoUrl || null,
-          ownerRepo: scan.ownerRepo || null,
-          branch: scan.branch,
-          projectSummary: [
-            repoLabel + ' analyzed on branch ' + scan.branch + '.',
-            'Repository appears ready for deeper architectural and quality checks.',
-            'No deployment actions were triggered in scan mode.',
-          ],
-          stackDetection: [
-            'Primary stack detection is pending backend scan integration.',
-            'Frontend and server runtime indicators will be surfaced in this section.',
-          ],
-          keyFiles: [
-            'package.json / equivalent manifest',
-            'README and setup docs',
-            'Primary application entry points',
-          ],
-          risks: [
-            'Dependency and security risk scoring will be added in follow-up.',
-            'Configuration drift checks are planned for a later backend pass.',
-          ],
-          recommendations: [
-            'Enable backend-powered file parsing for concrete stack detection.',
-            'Convert findings into tasks using follow-up actions once available.',
-          ],
-          followUpActionsAvailable: false,
-        };
-        setJson('json-scan', findings);
-        setList('scan-project-summary', findings.projectSummary);
-        setList('scan-stack-detection', findings.stackDetection);
-        setList('scan-key-files', findings.keyFiles);
-        setList('scan-risks', findings.risks);
-        setList('scan-recommendations', findings.recommendations);
-        setStageState('badge-scan', 'success');
-        setGlobalState('success', 'Scan complete');
+          setStageState('badge-scan', 'running');
+          setGlobalState('running', 'Scanning repository');
+          await new Promise((resolve) => setTimeout(resolve, 450));
+          const repoLabel = scan.ownerRepo || 'repository';
+          const findings = {
+            mode: 'scan_repository',
+            scannedAt: new Date().toISOString(),
+            repositoryUrl: scan.repoUrl || null,
+            ownerRepo: scan.ownerRepo || null,
+            branch: scan.branch,
+            projectSummary: [
+              repoLabel + ' analyzed on branch ' + scan.branch + '.',
+              'Repository appears ready for deeper architectural and quality checks.',
+              'No deployment actions were triggered in scan mode.',
+            ],
+            stackDetection: [
+              'Primary stack detection is pending backend scan integration.',
+              'Frontend and server runtime indicators will be surfaced in this section.',
+            ],
+            keyFiles: [
+              'package.json / equivalent manifest',
+              'README and setup docs',
+              'Primary application entry points',
+            ],
+            risks: [
+              'Dependency and security risk scoring will be added in follow-up.',
+              'Configuration drift checks are planned for a later backend pass.',
+            ],
+            recommendations: [
+              'Enable backend-powered file parsing for concrete stack detection.',
+              'Convert findings into tasks using follow-up actions once available.',
+            ],
+            followUpActionsAvailable: false,
+          };
+          setJson('json-scan', findings);
+          setList('scan-project-summary', findings.projectSummary);
+          setList('scan-stack-detection', findings.stackDetection);
+          setList('scan-key-files', findings.keyFiles);
+          setList('scan-risks', findings.risks);
+          setList('scan-recommendations', findings.recommendations);
+          setStageState('badge-scan', 'success');
+          setGlobalState('success', 'Scan complete');
         } finally {
           if (scanBtn) scanBtn.disabled = false;
         }
@@ -1317,14 +1317,6 @@ function renderDashboardHtml() {
       });
 
       safeBind(firstEl('input-source-mode'), 'change', updateStageSummaries);
-      bySelectorAll('[id^="btn-continue-"]').forEach((button) => {
-        if (button.dataset.boundAutoContinue === '1') return;
-        button.dataset.boundAutoContinue = '1';
-        const stageMatch = String(button.id).match(/btn-continue-(\d+)/);
-        if (stageMatch && !['1', '2', '3', '5', '6'].includes(stageMatch[1])) {
-          safeBind(button, 'click', () => continueStage(Number(stageMatch[1])));
-        }
-      });
 
       if (stageEl(1)) goToStage(1);
       setTopMode('build');
