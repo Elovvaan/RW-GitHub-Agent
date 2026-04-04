@@ -38,6 +38,20 @@ function shell(cmd, cwd, opts = {}) {
   return (out.stdout || '').trim();
 }
 
+function resolveBaseBranch(repoPath, preferredBranch) {
+  const preferred = String(preferredBranch || '').trim();
+  const hasPreferred = preferred
+    && spawnSync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${preferred}`], {
+      cwd: repoPath,
+      stdio: 'ignore',
+    }).status === 0;
+  if (hasPreferred) return preferred;
+
+  const current = shell('git rev-parse --abbrev-ref HEAD', repoPath);
+  if (current && current !== 'HEAD') return current;
+  return preferred || 'main';
+}
+
 function safeJsonParse(text, fallback = null) {
   try {
     return JSON.parse(text);
@@ -453,7 +467,7 @@ async function runAgent() {
   }
 
   const repoPath = args.repoPath;
-  const baseBranch = process.env.BASE_BRANCH || 'main';
+  const baseBranch = resolveBaseBranch(repoPath, process.env.BASE_BRANCH || 'main');
   const state = loadState(repoPath);
 
   let wf = state;
