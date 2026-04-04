@@ -277,6 +277,10 @@ function commitAndPush(repoPath, commitMessage, branch) {
   return true;
 }
 
+function currentHeadSha(repoPath) {
+  return shell('git rev-parse HEAD', repoPath);
+}
+
 function classifyDeployFailure(statusText, logsText = '') {
   const text = `${statusText || ''}\n${logsText || ''}`.toLowerCase();
   if (/(compile|build|webpack|tsc|syntax error|dependency|npm err)/.test(text)) return 'build';
@@ -553,8 +557,12 @@ async function runAgent() {
   }
 
   let committed = false;
+  let commitSha = null;
   if (!args.dryRun && wf.step === 'commit') {
     committed = commitAndPush(repoPath, wf.commit_message, branch);
+    if (committed) {
+      commitSha = currentHeadSha(repoPath);
+    }
     wf.step = committed ? 'deploy' : 'done';
     wf.status = committed ? 'in_progress' : 'done';
     wf.updated_at = new Date().toISOString();
@@ -577,6 +585,7 @@ async function runAgent() {
     task: wf.task,
     branch: wf.branch,
     commit_message: wf.commit_message,
+    commit_sha: commitSha,
     selected_files: wf.selectedFiles,
     plan_summary: wf.plan?.summary || null,
     committed,
