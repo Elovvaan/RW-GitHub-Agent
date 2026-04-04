@@ -263,7 +263,7 @@ function renderDashboardHtml() {
 <body>
   <div class="wrap">
     <h1>RW GitHub → Railway Pipeline</h1>
-    <p class="subtitle">Strict top-down flow: Connect GitHub → Enter Prompt → Generate Code → Push to GitHub → Render Preview → Deploy to Railway → Open Live App.</p>
+    <p class="subtitle">Strict top-down flow: Connect GitHub → Enter Prompt → Generate → Push → Render Preview → Deploy → Open App.</p>
     <div class="topbar">
       <button id="btn-refresh" class="secondary" type="button">Refresh Status</button>
       <span id="global-status" class="badge idle">idle</span>
@@ -285,13 +285,13 @@ function renderDashboardHtml() {
         <div id="summary-prompt" class="box">No prompt saved.</div>
       </article>
 
-      <article id="step-3" class="step"><h2>3) Generate Code <span id="badge-3" class="badge idle">idle</span></h2><p class="meta">Runs /run and captures branch + commit.</p>
+      <article id="step-3" class="step"><h2>3) Generate <span id="badge-3" class="badge idle">idle</span></h2><p class="meta">Runs /run and captures branch + commit.</p>
         <div class="actions"><button id="btn-generate" type="button">Generate Code</button></div>
         <pre id="json-generate">{}</pre>
       </article>
 
-      <article id="step-4" class="step"><h2>4) Push to GitHub <span id="badge-4" class="badge idle">idle</span></h2><p class="meta">Push result from generated branch/commit.</p>
-        <div class="actions"><button id="btn-push" type="button">Push to GitHub</button></div>
+      <article id="step-4" class="step"><h2>4) Push <span id="badge-4" class="badge idle">idle</span></h2><p class="meta">Push result from generated branch/commit.</p>
+        <div class="actions"><button id="btn-push" type="button">Push</button></div>
         <pre id="json-push">{}</pre>
       </article>
 
@@ -301,7 +301,7 @@ function renderDashboardHtml() {
         <pre id="json-preview">{}</pre>
       </article>
 
-      <article id="step-6" class="step"><h2>6) Deploy to Railway <span id="badge-6" class="badge idle">idle</span></h2><p class="meta">Triggers real deployment endpoint.</p>
+      <article id="step-6" class="step"><h2>6) Deploy <span id="badge-6" class="badge idle">idle</span></h2><p class="meta">Triggers real deployment endpoint.</p>
         <label>Project<input id="input-project" value="demo-project" /></label>
         <label>Service<input id="input-service" value="phone-runner" /></label>
         <label>Branch<input id="input-branch" value="main" /></label>
@@ -310,9 +310,9 @@ function renderDashboardHtml() {
         <pre id="json-deployment">{}</pre>
       </article>
 
-      <article id="step-7" class="step"><h2>7) Open Live App <span id="badge-7" class="badge idle">idle</span></h2><p class="meta">Enabled only after successful deploy + URL.</p>
+      <article id="step-7" class="step"><h2>7) Open App <span id="badge-7" class="badge idle">idle</span></h2><p class="meta">Enabled only after successful deploy + URL.</p>
         <div id="live-url" class="box">No live URL yet.</div>
-        <div class="actions"><button id="btn-open" class="secondary" type="button" disabled>Open Live App</button></div>
+        <div class="actions"><button id="btn-open" class="secondary" type="button" disabled>Open App</button></div>
         <pre id="json-route">{}</pre>
       </article>
     </section>
@@ -321,161 +321,289 @@ function renderDashboardHtml() {
   <script>
     function initDashboard(){
       const $ = (id) => document.getElementById(id);
-      const steps = [1,2,3,4,5,6,7];
+      const STEP_ORDER = [1,2,3,4,5,6,7];
+      const STATUS = { IDLE:'idle', RUNNING:'running', SUCCESS:'success', ERROR:'error' };
       const state = {
-        source:null, prompt:'', generated:null, pushed:null, preview:null, deployment:null, liveUrl:'',
-        statuses:{1:'idle',2:'idle',3:'idle',4:'idle',5:'idle',6:'idle',7:'idle'}
+        source: null,
+        prompt: '',
+        generated: null,
+        pushed: null,
+        preview: null,
+        deployment: null,
+        liveUrl: '',
+        statuses: { 1:'idle',2:'idle',3:'idle',4:'idle',5:'idle',6:'idle',7:'idle' },
       };
 
-      const pretty = (v) => JSON.stringify(v ?? null, null, 2);
-      const setJson = (id,v) => { const el=$(id); if(el) el.textContent=pretty(v); };
-      const setBadge = (n,status) => {
-        const valid=['idle','running','success','error'];
-        const s=valid.includes(status)?status:'idle';
-        state.statuses[n]=s;
-        const el=$('badge-'+n); if(el){ el.className='badge '+s; el.textContent=s; }
-      };
-      const setGlobal = (status,label) => { const el=$('global-status'); if(el){ el.className='badge '+status; el.textContent=label||status; } };
-      const updateLocks = () => {
-        const unlocked = {
-          1:true,
-          2:state.statuses[1]==='success',
-          3:state.statuses[2]==='success',
-          4:state.statuses[3]==='success',
-          5:state.statuses[4]==='success',
-          6:state.statuses[5]==='success',
-          7:state.statuses[6]==='success' && !!state.liveUrl,
-        };
-        steps.forEach((n)=>{
-          const step=$('step-'+n);
-          if(step) step.classList.toggle('locked', !unlocked[n]);
-          step && step.querySelectorAll('button,input,textarea,select').forEach((el)=>{
-            if (el.id==='btn-refresh') return;
-            if (el.id==='btn-open') { el.disabled = !unlocked[7]; return; }
-            const isAction = el.tagName==='BUTTON';
-            if (isAction) el.disabled = !unlocked[n];
+      const pretty = (value) => JSON.stringify(value ?? null, null, 2);
+      const setJson = (id, value) => { const el = $(id); if (el) el.textContent = pretty(value); };
+
+      function setGlobal(status, label){
+        const el = $('global-status');
+        if (!el) return;
+        el.className = 'badge ' + status;
+        el.textContent = label || status;
+      }
+
+      function setStepStatus(step, status){
+        const safe = Object.values(STATUS).includes(status) ? status : STATUS.IDLE;
+        state.statuses[step] = safe;
+        const badge = $('badge-' + step);
+        if (badge){
+          badge.className = 'badge ' + safe;
+          badge.textContent = safe;
+        }
+      }
+
+      function canRunStep(step){
+        if (step === 1) return true;
+        for (let previous = 1; previous < step; previous += 1) {
+          if (state.statuses[previous] !== STATUS.SUCCESS) return false;
+        }
+        if (step === 7) return Boolean(state.liveUrl);
+        return true;
+      }
+
+      function updateLocks(){
+        for (const step of STEP_ORDER){
+          const unlocked = canRunStep(step);
+          const card = $('step-' + step);
+          if (card) card.classList.toggle('locked', !unlocked);
+          if (!card) continue;
+          card.querySelectorAll('button,input,textarea,select').forEach((el) => {
+            if (el.id === 'btn-refresh') return;
+            const isPrimaryAction = el.tagName === 'BUTTON';
+            if (!isPrimaryAction) return;
+            if (el.id === 'btn-open') {
+              el.disabled = !canRunStep(7);
+              return;
+            }
+            el.disabled = !unlocked;
           });
-        });
-      };
+        }
+      }
+
+      function enterStep(step, label){
+        setStepStatus(step, STATUS.RUNNING);
+        setGlobal(STATUS.RUNNING, label || ('Running step ' + step));
+        updateLocks();
+      }
+
+      function failStep(step, label){
+        setStepStatus(step, STATUS.ERROR);
+        setGlobal(STATUS.ERROR, label || ('Step ' + step + ' failed'));
+        updateLocks();
+      }
+
+      function completeStep(step, label){
+        setStepStatus(step, STATUS.SUCCESS);
+        setGlobal(STATUS.SUCCESS, label || ('Step ' + step + ' complete'));
+        updateLocks();
+      }
+
       const ownerRepoFromUrl = (repoUrl) => {
-        const m = String(repoUrl||'').trim().match(/github\.com[:/](.+?)(?:\.git)?$/i);
-        if(!m) return '';
-        const parts=m[1].replace(/^\/+|\/+$/g,'').split('/').filter(Boolean);
-        return parts.length>=2 ? (parts[0]+'/'+parts[1].replace(/\.git$/,'')) : '';
+        const m = String(repoUrl || '').trim().match(/github\.com[:/](.+?)(?:\.git)?$/i);
+        if (!m) return '';
+        const parts = m[1].replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+        return parts.length >= 2 ? (parts[0] + '/' + parts[1].replace(/\.git$/, '')) : '';
       };
 
       async function fetchJson(url, options){
-        const res = await fetch(url, options);
-        const data = await res.json().catch(()=>({}));
-        return { ok:res.ok, data, status:res.status };
+        const response = await fetch(url, options);
+        const data = await response.json().catch(() => ({}));
+        return { ok: response.ok, status: response.status, data };
       }
 
       async function connectGithub(){
-        setBadge(1,'running'); setGlobal('running','Connecting GitHub');
+        if (!canRunStep(1)) return;
+        enterStep(1, 'Connecting GitHub');
         const mode = $('input-source-mode').value;
         const repoUrl = $('input-repo-url').value.trim();
-        const ownerRepo = ($('input-owner-repo').value.trim() || ownerRepoFromUrl(repoUrl)).replace(/^\/+|\/+$/g,'');
+        const ownerRepo = ($('input-owner-repo').value.trim() || ownerRepoFromUrl(repoUrl)).replace(/^\/+|\/+$/g, '');
         const branch = $('input-source-branch').value.trim() || 'main';
-        if(mode==='existing' && !ownerRepo){
-          const err={ error:'Owner/repo required in Existing Repo mode.' };
-          setJson('json-source', err); setBadge(1,'error'); setGlobal('error','Connect failed'); updateLocks(); return;
+
+        if (mode === 'existing' && !ownerRepo) {
+          setJson('json-source', { error: 'Owner/repo required for existing repository mode.' });
+          failStep(1, 'Connect failed');
+          return;
         }
-        state.source={ mode, repoUrl:repoUrl||null, ownerRepo:ownerRepo||null, branch, connectedAt:new Date().toISOString() };
+
+        state.source = { mode, repoUrl: repoUrl || null, ownerRepo: ownerRepo || null, branch, connectedAt: new Date().toISOString() };
         $('input-owner-repo').value = ownerRepo;
         $('input-branch').value = branch;
-        setJson('json-source', { ...state.source, status:'connected' });
-        setBadge(1,'success'); setGlobal('success','GitHub connected'); updateLocks();
+        setJson('json-source', { ...state.source, status: 'connected' });
+        completeStep(1, 'GitHub connected');
       }
 
-      function savePrompt(){
-        setBadge(2,'running');
+      async function savePrompt(){
+        if (!canRunStep(2)) return;
+        enterStep(2, 'Saving prompt');
         const prompt = $('input-task').value.trim();
-        if(!prompt){ setBadge(2,'error'); setGlobal('error','Prompt required'); updateLocks(); return; }
+        if (!prompt) {
+          failStep(2, 'Prompt required');
+          return;
+        }
         state.prompt = prompt;
         $('summary-prompt').textContent = prompt;
-        setBadge(2,'success'); setGlobal('success','Prompt saved'); updateLocks();
+        completeStep(2, 'Prompt saved');
       }
 
       async function generateCode(){
-        setBadge(3,'running'); setGlobal('running','Generating code');
-        const payload = { task: state.prompt };
-        const result = await fetchJson('/run',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+        if (!canRunStep(3)) return;
+        enterStep(3, 'Generating code');
+        const result = await fetchJson('/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ task: state.prompt }),
+        });
         setJson('json-generate', result.data);
-        if(!result.ok || !result.data || result.data.success===false){ setBadge(3,'error'); setGlobal('error','Generation failed'); updateLocks(); return; }
+        if (!result.ok || !result.data || result.data.success === false) {
+          failStep(3, 'Generation failed');
+          return;
+        }
         state.generated = result.data;
         const branch = String(result.data.branch || state.source?.branch || 'main');
         const commit = String(result.data.commit_sha || '').trim();
         $('input-branch').value = branch;
-        if(commit) $('input-commitSha').value = commit;
-        setBadge(3,'success'); setGlobal('success','Code generated'); updateLocks();
+        if (commit) $('input-commitSha').value = commit;
+        completeStep(3, 'Generation complete');
       }
 
-      function pushGithub(){
-        setBadge(4,'running'); setGlobal('running','Pushing to GitHub');
-        if(!state.generated){ setBadge(4,'error'); setGlobal('error','Generate code first'); updateLocks(); return; }
-        const pushedAt = new Date().toISOString();
+      async function pushGithub(){
+        if (!canRunStep(4)) return;
+        enterStep(4, 'Pushing to GitHub');
+        const branch = $('input-branch').value.trim() || state.generated?.branch || 'main';
+        const commitSha = $('input-commitSha').value.trim() || state.generated?.commit_sha || '';
+        if (!branch || !commitSha) {
+          setJson('json-push', { error: 'Missing branch or commit SHA from generation step.' });
+          failStep(4, 'Push failed');
+          return;
+        }
+
         state.pushed = {
-          repo: state.source?.ownerRepo || 'local-repo',
-          branch: $('input-branch').value.trim() || 'main',
-          commit: $('input-commitSha').value.trim() || state.generated.commit_sha || null,
-          message: state.generated.commit_message || 'Generated by RW pipeline',
-          pushedAt,
-          status:'pushed'
+          repo: state.source?.ownerRepo || null,
+          branch,
+          commit: commitSha,
+          pushedAt: new Date().toISOString(),
+          commitMessage: state.generated?.commit_message || null,
+          status: 'success',
         };
         setJson('json-push', state.pushed);
-        setBadge(4,'success'); setGlobal('success','Push complete'); updateLocks();
+        completeStep(4, 'Push complete');
       }
 
       async function renderPreview(){
-        setBadge(5,'running'); setGlobal('running','Rendering preview');
-        const summary = 'Preview from '+(state.pushed?.repo||'repo')+' @ '+(state.pushed?.branch||'main')+' • '+(state.prompt||'no prompt');
-        await new Promise(r=>setTimeout(r,250));
-        state.preview = { renderedAt:new Date().toISOString(), summary, commit:state.pushed?.commit || null, status:'ready' };
-        $('preview-summary').textContent = summary;
-        setJson('json-preview', state.preview);
-        setBadge(5,'success'); setGlobal('success','Preview ready'); updateLocks();
+        if (!canRunStep(5)) return;
+        if (state.statuses[4] !== STATUS.SUCCESS) {
+          failStep(5, 'Push must succeed before preview');
+          return;
+        }
+        enterStep(5, 'Rendering preview');
+        const preview = {
+          renderedAt: new Date().toISOString(),
+          repository: state.pushed?.repo,
+          branch: state.pushed?.branch,
+          commit: state.pushed?.commit,
+          prompt: state.prompt,
+          status: 'ready',
+        };
+        state.preview = preview;
+        $('preview-summary').textContent = 'Preview ready for ' + preview.branch + ' @ ' + preview.commit;
+        setJson('json-preview', preview);
+        completeStep(5, 'Preview rendered');
+      }
+
+      async function pollDeployment(deploymentId){
+        const maxAttempts = 40;
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+          const latest = await fetchJson('/deployments/latest');
+          if (latest.ok && latest.data?.deploymentId === deploymentId) {
+            if (latest.data.status === 'success') return latest.data;
+            if (latest.data.status === 'failed') throw new Error(latest.data.errorSummary || 'Deployment failed.');
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+        throw new Error('Timed out waiting for deployment to complete.');
       }
 
       async function deployRailway(){
-        setBadge(6,'running'); setGlobal('running','Deploying to Railway');
+        if (!canRunStep(6)) return;
+        if (state.statuses[5] !== STATUS.SUCCESS) {
+          failStep(6, 'Preview must complete before deploy');
+          return;
+        }
+
+        enterStep(6, 'Deploying to Railway');
         const payload = {
           project: $('input-project').value.trim(),
           service: $('input-service').value.trim(),
           branch: $('input-branch').value.trim(),
           commitSha: $('input-commitSha').value.trim(),
         };
-        const result = await fetchJson('/deployments/trigger',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
-        setJson('json-deployment', result.data);
-        if(!result.ok){ setBadge(6,'error'); setGlobal('error','Deploy failed'); state.liveUrl=''; $('live-url').textContent='No live URL yet.'; setBadge(7,'idle'); updateLocks(); return; }
-        const route = await fetchJson('/route');
-        setJson('json-route', route.data);
-        const liveFromRoute = Array.isArray(route.data?.routes) && route.data.routes[0] ? ('http://' + route.data.routes[0].domain) : '';
-        state.liveUrl = String(result.data?.url || liveFromRoute || '').trim();
-        $('live-url').textContent = state.liveUrl || 'No live URL yet.';
-        setBadge(6, state.liveUrl ? 'success' : 'error');
-        setBadge(7, state.liveUrl ? 'success' : 'idle');
-        setGlobal(state.liveUrl ? 'success' : 'error', state.liveUrl ? 'Deploy success' : 'Deploy missing URL');
-        updateLocks();
+        const trigger = await fetchJson('/deployments/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setJson('json-deployment', trigger.data);
+        if (!trigger.ok || !trigger.data?.deploymentId) {
+          state.liveUrl = '';
+          $('live-url').textContent = 'No live URL yet.';
+          failStep(6, 'Deploy failed');
+          setStepStatus(7, STATUS.IDLE);
+          updateLocks();
+          return;
+        }
+
+        try {
+          const finalDeployment = await pollDeployment(trigger.data.deploymentId);
+          const route = await fetchJson('/route');
+          setJson('json-route', route.data);
+          const routeUrl = Array.isArray(route.data?.routes) && route.data.routes[0] ? ('http://' + route.data.routes[0].domain) : '';
+          state.deployment = finalDeployment;
+          state.liveUrl = String(finalDeployment.url || routeUrl || '').trim();
+          $('live-url').textContent = state.liveUrl || 'No live URL yet.';
+          if (!state.liveUrl) {
+            failStep(6, 'Deploy finished without URL');
+            setStepStatus(7, STATUS.IDLE);
+            updateLocks();
+            return;
+          }
+          setStepStatus(7, STATUS.IDLE);
+          completeStep(6, 'Deploy success');
+        } catch (error) {
+          setJson('json-deployment', { ...trigger.data, error: error.message });
+          state.liveUrl = '';
+          $('live-url').textContent = 'No live URL yet.';
+          failStep(6, error.message || 'Deploy failed');
+          setStepStatus(7, STATUS.IDLE);
+          updateLocks();
+        }
       }
 
-      function openLive(){
-        if(!state.liveUrl) return;
-        setBadge(7,'running');
-        window.open(state.liveUrl, '_blank', 'noopener');
-        setBadge(7,'success');
-        setGlobal('success','Live app opened');
+      async function openLive(){
+        if (!canRunStep(7)) return;
+        enterStep(7, 'Opening app');
+        try {
+          window.open(state.liveUrl, '_blank', 'noopener');
+          completeStep(7, 'App opened');
+        } catch {
+          failStep(7, 'Failed to open app');
+        }
       }
 
       async function refreshStatus(){
-        setGlobal('running','Refreshing');
+        setGlobal(STATUS.RUNNING, 'Refreshing');
         const route = await fetchJson('/route');
         setJson('json-route', route.data);
-        if(!state.liveUrl){
-          const liveFromRoute = Array.isArray(route.data?.routes) && route.data.routes[0] ? ('http://' + route.data.routes[0].domain) : '';
-          if(liveFromRoute && state.statuses[6]==='success'){ state.liveUrl = liveFromRoute; $('live-url').textContent=liveFromRoute; }
+        if (!state.liveUrl) {
+          const routeUrl = Array.isArray(route.data?.routes) && route.data.routes[0] ? ('http://' + route.data.routes[0].domain) : '';
+          if (routeUrl && state.statuses[6] === STATUS.SUCCESS) {
+            state.liveUrl = routeUrl;
+            $('live-url').textContent = routeUrl;
+          }
         }
         updateLocks();
-        setGlobal('idle','idle');
+        setGlobal(STATUS.IDLE, STATUS.IDLE);
       }
 
       $('btn-connect').addEventListener('click', connectGithub);
@@ -488,7 +616,7 @@ function renderDashboardHtml() {
       $('btn-refresh').addEventListener('click', refreshStatus);
 
       updateLocks();
-      refreshStatus().catch(()=>{});
+      refreshStatus().catch(() => setGlobal(STATUS.IDLE, STATUS.IDLE));
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initDashboard, { once:true });
