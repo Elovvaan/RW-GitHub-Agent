@@ -220,6 +220,313 @@ function sendText(res, code, text) {
   res.end(text);
 }
 
+function sendHtml(res, code, html) {
+  res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(html);
+}
+
+function renderDashboardHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Phone Runner Control Plane</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #111a2b;
+      --panel-border: #24324b;
+      --text: #e5ecfb;
+      --muted: #9fb0d1;
+      --accent: #4f8cff;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(circle at top, #16233f, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.2rem, 1.5vw + 1rem, 2rem);
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+    .subtitle {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      background: linear-gradient(180deg, #131f36 0%, var(--panel) 100%);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      padding: 12px;
+      min-height: 130px;
+      box-shadow: 0 8px 22px rgba(0,0,0,0.2);
+    }
+    .card h2 {
+      margin: 0 0 10px;
+      font-size: 0.96rem;
+      font-weight: 600;
+      color: #c7d5f4;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+    .badge.ok { color: #bbf7d0; background: rgba(34,197,94,0.18); border-color: rgba(34,197,94,0.45); }
+    .badge.warn { color: #fde68a; background: rgba(245,158,11,0.18); border-color: rgba(245,158,11,0.45); }
+    .badge.err { color: #fecaca; background: rgba(239,68,68,0.18); border-color: rgba(239,68,68,0.45); }
+    .badge.neutral { color: #bfdbfe; background: rgba(79,140,255,0.16); border-color: rgba(79,140,255,0.4); }
+    .actions {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    button {
+      appearance: none;
+      border: 1px solid #3a5ea8;
+      background: linear-gradient(180deg, #3f74d6, #355fb1);
+      color: white;
+      border-radius: 10px;
+      padding: 9px 12px;
+      font-weight: 650;
+      font-size: 0.84rem;
+      cursor: pointer;
+    }
+    button.secondary {
+      border-color: #3f4a5f;
+      background: linear-gradient(180deg, #202c44, #172036);
+      color: #c8d5ef;
+    }
+    button:disabled { opacity: 0.6; cursor: progress; }
+    pre {
+      margin: 0;
+      max-height: 240px;
+      overflow: auto;
+      padding: 10px;
+      border-radius: 8px;
+      background: #0a1322;
+      border: 1px solid #23334f;
+      color: #c7f0ff;
+      font-size: 0.76rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .form {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 8px;
+      margin: 0 0 10px;
+    }
+    label {
+      display: grid;
+      gap: 4px;
+      font-size: 0.74rem;
+      color: var(--muted);
+    }
+    input {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid #2b3a57;
+      background: #0a1322;
+      color: var(--text);
+      padding: 8px 9px;
+      font-size: 0.82rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Phone Runner Control Plane</h1>
+    <p class="subtitle">Live status and action panel for health, routing, deployments, and test runs.</p>
+    <div class="grid">
+      <section class="card">
+        <h2>Health <span id="badge-health" class="badge neutral">Loading</span></h2>
+        <pre id="json-health">{}</pre>
+      </section>
+      <section class="card">
+        <h2>Worker Connected <span id="badge-worker" class="badge neutral">Unknown</span></h2>
+        <pre id="json-worker">{}</pre>
+      </section>
+      <section class="card">
+        <h2>Active Routes <span id="badge-routes" class="badge neutral">Loading</span></h2>
+        <pre id="json-route">{}</pre>
+      </section>
+      <section class="card">
+        <h2>Latest Deployment <span id="badge-deployment" class="badge neutral">Loading</span></h2>
+        <pre id="json-deployment">{}</pre>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2>Recent Result <span id="badge-result" class="badge neutral">Idle</span></h2>
+        <pre id="json-result">{}</pre>
+        <div class="actions">
+          <button id="btn-run">Run Test</button>
+          <button id="btn-refresh" class="secondary">Refresh Status</button>
+        </div>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2>Trigger Deployment <span id="badge-trigger" class="badge neutral">Ready</span></h2>
+        <div class="form">
+          <label>Project
+            <input id="input-project" value="demo-project" />
+          </label>
+          <label>Service
+            <input id="input-service" value="phone-runner" />
+          </label>
+          <label>Branch
+            <input id="input-branch" value="main" />
+          </label>
+          <label>Commit SHA
+            <input id="input-commitSha" value="0000000000000000000000000000000000000000" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="btn-trigger">Trigger Deployment</button>
+        </div>
+      </section>
+    </div>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    function pretty(value) {
+      return JSON.stringify(value ?? null, null, 2);
+    }
+    function setJson(id, payload) {
+      $(id).textContent = pretty(payload);
+    }
+    function setBadge(id, label, kind) {
+      const el = $(id);
+      el.textContent = label;
+      el.className = 'badge ' + (kind || 'neutral');
+    }
+    async function fetchJson(url, options) {
+      const res = await fetch(url, options);
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, status: res.status, data };
+    }
+    async function loadHealth() {
+      const result = await fetchJson('/health');
+      setJson('json-health', result.data);
+      setBadge('badge-health', result.ok && result.data.ok ? 'OK' : 'Unhealthy', result.ok && result.data.ok ? 'ok' : 'err');
+      setJson('json-worker', { workerConfigured: !!result.data.workerConfigured });
+      setBadge('badge-worker', result.data.workerConfigured ? 'Connected' : 'Not Configured', result.data.workerConfigured ? 'ok' : 'warn');
+    }
+    async function loadRoutes() {
+      const result = await fetchJson('/route');
+      setJson('json-route', result.data);
+      const count = Array.isArray(result.data.routes) ? result.data.routes.length : 0;
+      setBadge('badge-routes', String(count), count > 0 ? 'ok' : 'warn');
+    }
+    async function loadLatestDeployment() {
+      const result = await fetchJson('/deployments/latest');
+      setJson('json-deployment', result.data);
+      if (!result.ok) {
+        setBadge('badge-deployment', 'None', 'warn');
+        return;
+      }
+      const status = String(result.data.status || 'unknown');
+      const kind = status === 'success' ? 'ok' : status === 'failed' ? 'err' : 'warn';
+      setBadge('badge-deployment', status, kind);
+    }
+    async function refreshAll() {
+      setBadge('badge-result', 'Loading', 'neutral');
+      try {
+        await Promise.all([loadHealth(), loadRoutes(), loadLatestDeployment()]);
+        setBadge('badge-result', 'Ready', 'ok');
+      } catch (err) {
+        setJson('json-result', { error: String(err && err.message || err) });
+        setBadge('badge-result', 'Load Error', 'err');
+      }
+    }
+    async function runTest() {
+      const button = $('btn-run');
+      button.disabled = true;
+      setBadge('badge-result', 'Running', 'warn');
+      const payload = { task: 'Echo a short status update and exit.' };
+      try {
+        const result = await fetchJson('/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setJson('json-result', result.data);
+        setBadge('badge-result', result.ok ? 'Success' : 'Failed', result.ok ? 'ok' : 'err');
+      } catch (err) {
+        setJson('json-result', { error: String(err && err.message || err) });
+        setBadge('badge-result', 'Error', 'err');
+      } finally {
+        button.disabled = false;
+      }
+    }
+    async function triggerDeployment() {
+      const button = $('btn-trigger');
+      button.disabled = true;
+      setBadge('badge-trigger', 'Sending', 'warn');
+      const payload = {
+        project: $('input-project').value.trim(),
+        service: $('input-service').value.trim(),
+        branch: $('input-branch').value.trim(),
+        commitSha: $('input-commitSha').value.trim(),
+      };
+      try {
+        const result = await fetchJson('/deployments/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setJson('json-result', result.data);
+        setBadge('badge-result', result.ok ? 'Success' : 'Failed', result.ok ? 'ok' : 'err');
+        setBadge('badge-trigger', result.ok ? 'Triggered' : 'Rejected', result.ok ? 'ok' : 'err');
+      } catch (err) {
+        setJson('json-result', { error: String(err && err.message || err) });
+        setBadge('badge-trigger', 'Error', 'err');
+      } finally {
+        button.disabled = false;
+      }
+    }
+    $('btn-run').addEventListener('click', runTest);
+    $('btn-refresh').addEventListener('click', refreshAll);
+    $('btn-trigger').addEventListener('click', triggerDeployment);
+    refreshAll();
+  </script>
+</body>
+</html>`;
+}
+
 function buildRouteDomain(project, service) {
   return `${sanitizeName(service)}.${sanitizeName(project)}.local`;
 }
@@ -599,6 +906,11 @@ function proxyToDeployment(req, res, route) {
 }
 
 const server = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/') {
+    sendHtml(res, 200, renderDashboardHtml());
+    return;
+  }
+
   if (req.method === 'GET' && req.url === '/health') {
     sendJson(res, 200, { ok: true, workerConfigured: !!(WORKER_URL && WORKER_TOKEN) });
     return;
