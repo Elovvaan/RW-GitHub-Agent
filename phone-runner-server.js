@@ -280,7 +280,7 @@ function renderDashboardHtml() {
     }
     .pipeline {
       display: grid;
-      grid-template-columns: repeat(6, minmax(210px, 1fr));
+      grid-template-columns: repeat(7, minmax(210px, 1fr));
       gap: 10px;
       overflow-x: auto;
       padding-bottom: 6px;
@@ -431,6 +431,70 @@ function renderDashboardHtml() {
       display: flex;
       align-items: center;
     }
+    .preview-stage {
+      grid-column: span 2;
+      min-height: 420px;
+      border-color: #3a5ea8;
+      box-shadow: 0 14px 32px rgba(37, 99, 235, 0.22);
+    }
+    .preview-board {
+      border: 1px solid #355386;
+      border-radius: 10px;
+      background: linear-gradient(180deg, #0a1324, #0b172d);
+      min-height: 210px;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .preview-header {
+      height: 18px;
+      width: 50%;
+      border-radius: 6px;
+      background: linear-gradient(90deg, #375f9d, #1f3b67);
+    }
+    .preview-blocks {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 8px;
+      min-height: 130px;
+    }
+    .preview-card, .preview-sidebar {
+      border: 1px solid #2a4067;
+      border-radius: 8px;
+      background: #0a1427;
+      padding: 8px;
+      display: grid;
+      gap: 6px;
+    }
+    .preview-line {
+      height: 10px;
+      border-radius: 6px;
+      background: linear-gradient(90deg, #2c4c7f, #1d3357);
+    }
+    .preview-summary {
+      border: 1px solid #2f4f80;
+      border-radius: 10px;
+      padding: 8px;
+      background: #0a162c;
+      color: #d8e8ff;
+      font-size: 0.82rem;
+      line-height: 1.35;
+      min-height: 62px;
+    }
+    .toggle-wrap {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .advanced-json {
+      display: none;
+    }
+    body.show-advanced .advanced-json {
+      display: block;
+    }
   </style>
 </head>
 <body>
@@ -440,6 +504,7 @@ function renderDashboardHtml() {
     <div class="top-actions">
       <button id="btn-refresh" class="secondary">Refresh Pipeline Status</button>
       <span id="global-status" class="badge idle">Idle</span>
+      <label class="toggle-wrap"><input id="toggle-advanced" type="checkbox" /> Advanced (show raw JSON)</label>
     </div>
     <section class="pipeline">
       <article class="stage">
@@ -473,7 +538,7 @@ function renderDashboardHtml() {
             <input id="input-source-branch" value="main" />
           </label>
         </div>
-        <pre id="json-source">{}</pre>
+        <pre id="json-source" class="advanced-json">{}</pre>
         <div class="meta" id="meta-source">Source: not loaded</div>
         <div class="actions">
           <button id="btn-pull">Pull Repository</button>
@@ -483,21 +548,47 @@ function renderDashboardHtml() {
         <h2 class="stage-title">Generate / Modify Code <span class="stage-num">Stage 3</span></h2>
         <span id="badge-generate" class="badge idle">idle</span>
         <p class="meta">Run RW generation for new projects or modifications for loaded repositories.</p>
-        <pre id="json-generate">{}</pre>
+        <pre id="json-generate" class="advanced-json">{}</pre>
         <div class="meta" id="meta-generate">Repo: pending</div>
         <div class="actions">
           <button id="btn-run">Generate / Modify Code</button>
         </div>
       </article>
+      <article class="stage preview-stage">
+        <h2 class="stage-title">Preview <span class="stage-num">Stage 4</span></h2>
+        <span id="badge-preview" class="badge idle">idle</span>
+        <p class="meta">Generate a visual preview before pushing code to GitHub.</p>
+        <div class="preview-board">
+          <div class="preview-header"></div>
+          <div class="preview-blocks">
+            <div class="preview-card">
+              <div class="preview-line"></div>
+              <div class="preview-line" style="width:82%"></div>
+              <div class="preview-line" style="width:66%"></div>
+              <div class="preview-line" style="width:54%"></div>
+            </div>
+            <div class="preview-sidebar">
+              <div class="preview-line"></div>
+              <div class="preview-line" style="width:76%"></div>
+              <div class="preview-line" style="width:62%"></div>
+            </div>
+          </div>
+        </div>
+        <div id="preview-summary" class="preview-summary">Preview summary will appear after generation.</div>
+        <pre id="json-preview" class="advanced-json">{}</pre>
+        <div class="actions">
+          <button id="btn-preview">Render Preview</button>
+        </div>
+      </article>
       <article class="stage">
-        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 4</span></h2>
+        <h2 class="stage-title">Push to GitHub <span class="stage-num">Stage 5</span></h2>
         <span id="badge-push" class="badge idle">idle</span>
         <p class="meta">Simulated push details from branch and commit SHA.</p>
-        <pre id="json-github">{}</pre>
+        <pre id="json-github" class="advanced-json">{}</pre>
         <div class="meta" id="meta-github">Branch: pending · Commit: pending</div>
       </article>
       <article class="stage">
-        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 5</span></h2>
+        <h2 class="stage-title">Deploy on Railway <span class="stage-num">Stage 6</span></h2>
         <span id="badge-railway" class="badge idle">idle</span>
         <p class="meta">Uses existing deployment trigger and status logic.</p>
         <div class="form dual">
@@ -514,17 +605,17 @@ function renderDashboardHtml() {
             <input id="input-commitSha" value="0000000000000000000000000000000000000000" />
           </label>
         </div>
-        <pre id="json-deployment">{}</pre>
+        <pre id="json-deployment" class="advanced-json">{}</pre>
         <div class="actions">
           <button id="btn-trigger">Deploy on Railway</button>
         </div>
       </article>
       <article class="stage">
-        <h2 class="stage-title">Live App <span class="stage-num">Stage 6</span></h2>
+        <h2 class="stage-title">Live App <span class="stage-num">Stage 7</span></h2>
         <span id="badge-live" class="badge idle">idle</span>
         <p class="meta">Final URL from the latest successful deployment.</p>
         <div id="live-url" class="url-box">No live URL yet.</div>
-        <pre id="json-route">{}</pre>
+        <pre id="json-route" class="advanced-json">{}</pre>
         <div class="actions">
           <button id="btn-open" class="secondary" disabled>Open Live App</button>
         </div>
@@ -560,6 +651,32 @@ function renderDashboardHtml() {
       $('live-url').textContent = latestLiveUrl || 'No live URL yet.';
       $('btn-open').disabled = !latestLiveUrl;
       setStageState('badge-live', latestLiveUrl ? 'success' : 'idle');
+    }
+    function buildPreviewSummary() {
+      const task = $('input-task').value.trim();
+      const source = getSourceState();
+      const branch = $('input-branch').value.trim() || source.branch || 'main';
+      const scope = source.mode === 'new' ? 'a new project' : (source.ownerRepo || 'the selected repository');
+      if (!task) {
+        return 'Preparing a UI-focused update for ' + scope + ' on branch ' + branch + '.';
+      }
+      return 'Building ' + scope + ' on branch ' + branch + ': ' + task.slice(0, 180);
+    }
+    async function renderPreview() {
+      setStageState('badge-preview', 'running');
+      setGlobalState('running', 'Rendering preview');
+      const summary = buildPreviewSummary();
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      const previewPayload = {
+        generatedAt: new Date().toISOString(),
+        summary,
+        layout: 'mock-ui',
+        status: 'preview_ready',
+      };
+      $('preview-summary').textContent = summary;
+      setJson('json-preview', previewPayload);
+      setStageState('badge-preview', 'success');
+      setGlobalState('idle', 'Preview ready');
     }
     async function fetchJson(url, options) {
       const res = await fetch(url, options);
@@ -659,6 +776,7 @@ function renderDashboardHtml() {
         setStageState('badge-source', 'success');
       }
       setStageState('badge-generate', 'running');
+      setStageState('badge-preview', 'idle');
       setStageState('badge-push', 'idle');
       setStageState('badge-live', 'idle');
       setGlobalState('running', 'Flow running');
@@ -692,9 +810,15 @@ function renderDashboardHtml() {
           status: 'pushed',
         };
         setJson('json-github', githubData);
+        $('preview-summary').textContent = buildPreviewSummary();
+        setJson('json-preview', {
+          generatedAt: new Date().toISOString(),
+          status: 'pending_render',
+          summary: buildPreviewSummary(),
+        });
         $('meta-github').textContent = 'Branch: ' + branch + ' · Commit: ' + shortCommit(commitSha);
         setStageState('badge-push', 'success');
-        setGlobalState('running', 'Ready to deploy');
+        setGlobalState('running', 'Ready to preview and deploy');
       } catch (err) {
         setJson('json-generate', { error: String(err && err.message || err) });
         setStageState('badge-generate', 'failed');
@@ -748,7 +872,11 @@ function renderDashboardHtml() {
       if (latestLiveUrl) window.open(latestLiveUrl, '_blank', 'noopener');
     }
 
+    $('toggle-advanced').addEventListener('change', (event) => {
+      document.body.classList.toggle('show-advanced', !!event.target.checked);
+    });
     $('btn-run').addEventListener('click', runGenerate);
+    $('btn-preview').addEventListener('click', renderPreview);
     $('btn-pull').addEventListener('click', pullRepository);
     $('btn-trigger').addEventListener('click', triggerDeployment);
     $('btn-refresh').addEventListener('click', refreshAll);
